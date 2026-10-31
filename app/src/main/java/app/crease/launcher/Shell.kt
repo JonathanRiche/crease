@@ -11,7 +11,7 @@ class State {
     val hidden = linkedSetOf<String>()
     val pins = mutableListOf<String>()
     val folders = linkedMapOf<String, MutableList<String>>()
-    var theme = "green"
+    var theme = DEFAULT_THEME
     var autoKeyboard = false
 }
 
@@ -37,9 +37,11 @@ interface Host {
     fun themeChanged()
 }
 
+const val DEFAULT_THEME = "ember"
+
 val THEMES = linkedMapOf(
-    "green" to 0xFF7CFC9AL, "amber" to 0xFFFFB454L, "cyan" to 0xFF6AD7E5L,
-    "pink" to 0xFFFF8FB8L, "white" to 0xFFF2F2F2L,
+    "ember" to 0xFFE8A36BL, "moss" to 0xFFA8C686L, "sea" to 0xFF7FB8C4L,
+    "rose" to 0xFFE39AA8L, "bone" to 0xFFE6DFCFL,
 )
 
 /** Lower is better; null means no match. */
@@ -78,6 +80,13 @@ class Shell(val state: State, private val host: Host) {
     private fun err(s: String) = print(Line(s, Kind.ERR))
     private fun item(s: String, cmd: String, run: Boolean = true) =
         print(Line(s, Kind.ITEM, Action(cmd, run)))
+
+    fun clearOutput() {
+        output.clear()
+        generation++
+    }
+
+    fun visibleApps() = visible()
 
     private fun visible() = host.apps().filter { it.id !in state.hidden }
     private fun byId(id: String) = host.apps().firstOrNull { it.id == id }
@@ -139,7 +148,7 @@ class Shell(val state: State, private val host: Host) {
             "settings" -> host.settings()
             "theme" -> theme(rest)
             "keyboard" -> keyboard(rest)
-            "clear" -> { output.clear(); generation++ }
+            "clear" -> clearOutput()
         }
     }
 

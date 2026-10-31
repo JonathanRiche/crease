@@ -61,7 +61,9 @@ class MainActivity : Activity(), Host {
     private lateinit var widgetScroll: ScrollView
     private lateinit var widgetBox: LinearLayout
     private var folderBox: LinearLayout? = null
+    private lateinit var suggestRow: HorizontalScrollView
     private var twoPane = false
+    private var idleShown = false
     private var shownTotal = 0L
     private var shownGeneration = 0
 
@@ -73,7 +75,7 @@ class MainActivity : Activity(), Host {
         override fun onPackagesUnavailable(p: Array<out String>, u: UserHandle, r: Boolean) = appsChanged()
     }
 
-    private val accent get() = (THEMES[state.theme] ?: THEMES.getValue("green")).toInt()
+    private val accent get() = (THEMES[state.theme] ?: THEMES.getValue(DEFAULT_THEME)).toInt()
     private val screen get() = if (resources.configuration.smallestScreenWidthDp >= 600) INNER else COVER
     private fun dp(v: Int) = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics,
@@ -90,10 +92,6 @@ class MainActivity : Activity(), Host {
         store.load(state, widgetRefs)
         shell = Shell(state, this)
         reconcileWidgets()
-
-        shell.print(Line("crease. type a name, or:"))
-        shell.print(Line("help", Kind.ITEM, Action("help")))
-        shell.print(Line("ls", Kind.ITEM, Action("ls")))
 
         window.setDecorFitsSystemWindows(false)
         launcherApps.registerCallback(packageCallback, Handler(Looper.getMainLooper()))
@@ -121,6 +119,8 @@ class MainActivity : Activity(), Host {
     override fun onStop() {
         super.onStop()
         runCatching { widgetHost.stopListening() }
+        // Come back to a clean screen after using an app.
+        resetInput()
     }
 
     override fun onDestroy() {
@@ -146,37 +146,40 @@ class MainActivity : Activity(), Host {
 
     // ---- layout ----
 
+    private val mono by lazy { resources.getFont(R.font.jetbrains_mono_regular) }
+    private val monoLight by lazy { resources.getFont(R.font.jetbrains_mono_light) }
+
     private fun build() {
         val cfg = resources.configuration
         val draft = if (::prompt.isInitialized) prompt.text.toString() else ""
         twoPane = cfg.screenWidthDp >= 600 && cfg.screenHeightDp >= 480
         shownTotal = 0
         shownGeneration = shell.generation
+        idleShown = false
         folderBox = null
 
         widgetBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        widgetScroll = ScrollView(this).apply {
-            isFillViewport = false
-            addView(widgetBox)
-        }
-        shortcutBox = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val terminal = buildTerminal(draft)
+        widgetScroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
+        val terminal = buildTerminal()
 
         root = LinearLayout(this)
         if (twoPane) {
             root.orientation = LinearLayout.HORIZONTAL
             val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            left.addView(clock(32f))
-            left.addView(rowScroll(shortcutBox))
-            val folders = LinearLayout(this).apply {
+            left.addView(clock(72f))
+            shortcutBox = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, dp(8), 0, dp(8))
+                setPadding(0, dp(28), 0, 0)
             }
+            val folders = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             folderBox = folders
-            left.addView(folders)
+            widgetBox.setPadding(0, dp(28), 0, 0)
+            widgetScroll.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(shortcutBox)
+                addView(folders)
+                addView(widgetBox)
+            })
             left.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
             // Equal weights put the gap on the crease, so no text sits in the fold.
             root.addView(left, LinearLayout.LayoutParams(0, MATCH, 1f))
@@ -184,67 +187,90 @@ class MainActivity : Activity(), Host {
             root.addView(terminal, LinearLayout.LayoutParams(0, MATCH, 1f))
         } else {
             root.orientation = LinearLayout.VERTICAL
-            root.addView(clock(22f))
+            root.addView(clock(56f))
+            widgetBox.setPadding(0, dp(20), 0, 0)
+            widgetScroll.addView(widgetBox)
             root.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, coverWidgetHeight()))
-            root.addView(rowScroll(shortcutBox))
             root.addView(terminal, LinearLayout.LayoutParams(MATCH, 0, 1f))
         }
+        val edge = dp(if (twoPane) 32 else 24)
         root.setOnApplyWindowInsetsListener { v, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
             val ime = insets.getInsets(WindowInsets.Type.ime())
-            val pad = dp(14)
-            v.setPadding(bars.left + pad, bars.top + dp(6), bars.right + pad, maxOf(bars.bottom, ime.bottom) + dp(4))
+            v.setPadding(bars.left + edge, bars.top + dp(28), bars.right + edge, maxOf(bars.bottom, ime.bottom) + dp(8))
             // The cover screen is too short for a widget and a keyboard.
             if (!twoPane) widgetScroll.visibility =
                 if (ime.bottom > 0 || widgetsHere().isEmpty()) View.GONE else View.VISIBLE
             insets
         }
         setContentView(root)
+        prompt.setText(draft)
+        prompt.setSelection(draft.length)
         renderWidgets()
         refreshChrome()
         syncOutput()
     }
 
-    private fun clock(size: Float) = TextClock(this).apply {
-        format24Hour = "EEE d MMM  HH:mm"
-        format12Hour = "EEE d MMM  h:mm a"
-        typeface = Typeface.MONOSPACE
-        setTextColor(accent)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
-        setPadding(0, dp(4), 0, dp(8))
-    }
-
-    private fun rowScroll(row: LinearLayout) = HorizontalScrollView(this).apply {
-        isHorizontalScrollBarEnabled = false
-        addView(row)
-    }
-
-    private fun buildTerminal(draft: String): LinearLayout {
-        outputBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.BOTTOM
+    /** Large thin time, with a small lowercase date and one accent block beneath it. */
+    private fun clock(size: Float) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        val lower = object : android.text.method.ReplacementTransformationMethod() {
+            override fun getOriginal() = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".toCharArray()
+            override fun getReplacement() = "abcdefghijklmnopqrstuvwxyz".toCharArray()
         }
+        addView(TextClock(context).apply {
+            format24Hour = "HH:mm"
+            format12Hour = "h:mm"
+            typeface = monoLight
+            setTextColor(TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
+            isSingleLine = true
+            includeFontPadding = false
+        })
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, 0)
+            addView(TextClock(context).apply {
+                format24Hour = "EEE d MMM"
+                format12Hour = "EEE d MMM"
+                typeface = mono
+                setTextColor(DIM)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                isSingleLine = true
+                transformationMethod = lower
+            })
+            addView(View(context).apply { setBackgroundColor(accent) },
+                LinearLayout.LayoutParams(dp(7), dp(14)).apply { marginStart = dp(8) })
+        })
+    }
+
+    private fun buildTerminal(): LinearLayout {
+        outputBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         outputScroll = ScrollView(this).apply {
             isFillViewport = true
             isVerticalScrollBarEnabled = false
             addView(outputBox)
         }
-        outputBox.setOnClickListener { showKeyboard() }
         suggestBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            minimumHeight = dp(40)
             gravity = Gravity.CENTER_VERTICAL
         }
+        suggestRow = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+            addView(suggestBox)
+        }
         prompt = EditText(this).apply {
-            typeface = Typeface.MONOSPACE
+            typeface = mono
             setTextColor(TEXT)
-            setHintTextColor(DIM)
-            hint = "type here"
+            setHintTextColor(FAINT)
+            hint = "search"
             background = null
             isSingleLine = true
             textCursorDrawable?.setTint(accent)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            setPadding(dp(8), dp(10), 0, dp(10))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            setPadding(dp(10), dp(12), 0, dp(12))
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
                 InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
             imeOptions = EditorInfo.IME_ACTION_GO or EditorInfo.IME_FLAG_NO_EXTRACT_UI
@@ -262,33 +288,31 @@ class MainActivity : Activity(), Host {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(TextView(context).apply {
-                text = "$"
-                typeface = Typeface.MONOSPACE
+                text = ">"
+                typeface = mono
                 setTextColor(accent)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             })
             addView(prompt, LinearLayout.LayoutParams(0, WRAP, 1f))
         }
-        prompt.setText(draft)
-        prompt.setSelection(draft.length)
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(outputScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
-            addView(rowScroll(suggestBox), LinearLayout.LayoutParams(MATCH, WRAP))
+            addView(suggestRow, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(promptRow, LinearLayout.LayoutParams(MATCH, WRAP))
         }
     }
 
     private fun lineView(line: Line) = TextView(this).apply {
-        text = line.text
-        typeface = Typeface.MONOSPACE
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        text = if (line.kind == Kind.ITEM) line.text.lowercase() else line.text
+        typeface = mono
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, if (line.action != null) 15f else 13f)
         setTextColor(
             when (line.kind) {
-                Kind.ECHO -> DIM
-                Kind.OUT -> TEXT
+                Kind.ECHO -> FAINT
+                Kind.OUT -> DIM
                 Kind.ERR -> ERROR
-                Kind.ITEM -> accent
+                Kind.ITEM -> TEXT
             },
         )
         val action = line.action
@@ -303,14 +327,14 @@ class MainActivity : Activity(), Host {
         }
     }
 
-    private fun chip(label: String, onTap: () -> Unit) = TextView(this).apply {
-        text = label
-        typeface = Typeface.MONOSPACE
-        setTextColor(accent)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+    private fun chip(label: String, color: Int = TEXT, onTap: () -> Unit) = TextView(this).apply {
+        text = label.lowercase()
+        typeface = mono
+        setTextColor(color)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         gravity = Gravity.CENTER_VERTICAL
         minHeight = dp(40)
-        setPadding(dp(4), 0, dp(14), 0)
+        setPadding(0, 0, dp(18), 0)
         setOnClickListener { onTap() }
         isFocusable = false
     }
@@ -319,16 +343,14 @@ class MainActivity : Activity(), Host {
         renderShortcuts()
         renderFolders()
         renderSuggestions()
+        if (idleShown) renderIdle()
     }
 
     private fun renderShortcuts() {
+        if (!twoPane) return
         shortcutBox.removeAllViews()
         state.pins.forEach { id ->
             byIdOrNull(id)?.let { app -> shortcutBox.addView(chip(app.label) { perform(Action("open ${app.label}")) }) }
-        }
-        // The inner screen has a folder tree; the cover keeps folders in this row.
-        if (!twoPane) state.folders.keys.forEach { name ->
-            shortcutBox.addView(chip("$name/") { perform(Action("ls $name")) })
         }
     }
 
@@ -337,7 +359,7 @@ class MainActivity : Activity(), Host {
         box.removeAllViews()
         state.folders.forEach { (name, ids) ->
             val isOpen = name in openFolders
-            box.addView(chip("${if (isOpen) "v" else ">"} $name/") {
+            box.addView(chip("$name/", if (isOpen) accent else DIM) {
                 if (!openFolders.add(name)) openFolders.remove(name)
                 renderFolders()
             })
@@ -349,17 +371,53 @@ class MainActivity : Activity(), Host {
 
     private fun renderSuggestions() {
         suggestBox.removeAllViews()
-        shell.suggest(prompt.text.toString()).forEach { s ->
-            suggestBox.addView(chip(s.label) { perform(Action(s.fill, s.run)) })
+        val found = shell.suggest(prompt.text.toString())
+        found.forEachIndexed { i, s ->
+            suggestBox.addView(chip(s.label, if (i == 0) accent else DIM) { perform(Action(s.fill, s.run)) })
         }
+        suggestRow.visibility = if (found.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    /**
+     * What sits in the output area when nothing has been run. Inner screen: every app.
+     * Cover screen: pins and folders, near the thumb.
+     */
+    private fun renderIdle() {
+        outputBox.removeAllViews()
+        idleShown = true
+        if (twoPane) {
+            outputBox.gravity = Gravity.TOP
+            shell.visibleApps().forEach { app ->
+                outputBox.addView(lineView(Line(app.label, Kind.ITEM, Action("open ${app.label}"))))
+            }
+        } else {
+            outputBox.gravity = Gravity.BOTTOM
+            state.pins.mapNotNull(::byIdOrNull).forEach { app ->
+                outputBox.addView(lineView(Line(app.label, Kind.ITEM, Action("open ${app.label}"))))
+            }
+            state.folders.keys.forEach { name ->
+                outputBox.addView(chip("$name/", DIM) { perform(Action("ls $name")) })
+            }
+        }
+        outputScroll.post { outputScroll.scrollTo(0, if (twoPane) 0 else outputBox.height) }
     }
 
     private fun syncOutput() {
         if (shownGeneration != shell.generation) {
             outputBox.removeAllViews()
+            idleShown = false
             shownGeneration = shell.generation
             shownTotal = shell.total
         }
+        if (shell.output.isEmpty()) {
+            if (!idleShown) renderIdle()
+            return
+        }
+        if (idleShown) {
+            outputBox.removeAllViews()
+            idleShown = false
+        }
+        outputBox.gravity = Gravity.BOTTOM
         val fresh = (shell.total - shownTotal).coerceAtMost(shell.output.size.toLong()).toInt()
         val lines = if (shownTotal == 0L) shell.output else shell.output.takeLast(fresh)
         lines.forEach { outputBox.addView(lineView(it)) }
@@ -384,10 +442,13 @@ class MainActivity : Activity(), Host {
         refreshChrome()
     }
 
+    /** Back to the clean home screen: no draft, no output, no keyboard. */
     private fun resetInput() {
         prompt.setText("")
         prompt.clearFocus()
         getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(prompt.windowToken, 0)
+        shell.clearOutput()
+        syncOutput()
     }
 
     private fun showKeyboard() {
@@ -601,16 +662,17 @@ class MainActivity : Activity(), Host {
         const val PENDING_WIDGET = "pendingWidget"
         const val COVER = "cover"
         const val INNER = "inner"
-        const val CREASE_GAP_DP = 28
-        const val PANE_MARGIN_DP = 28
+        const val CREASE_GAP_DP = 40
+        const val PANE_MARGIN_DP = 64
         const val WIDGET_GAP_DP = 8
         // Widgets often declare a minimum smaller than they can draw in without clipping.
         const val MIN_WIDGET_DP = 80
         const val MAX_DEFAULT_WIDGET_DP = 240
         const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
-        val TEXT = Color.parseColor("#D8D8D8")
-        val DIM = Color.parseColor("#6E6E6E")
-        val ERROR = Color.parseColor("#FF6B6B")
+        val TEXT = Color.parseColor("#E6DFCF")
+        val DIM = Color.parseColor("#8A8478")
+        val FAINT = Color.parseColor("#55514A")
+        val ERROR = Color.parseColor("#D98A7A")
     }
 }

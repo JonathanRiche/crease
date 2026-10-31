@@ -1,7 +1,7 @@
 # crease
 
 A text-only terminal launcher for foldable Android phones, in the spirit of Pro Launcher.
-Android 11+. No icons, no internet permission, about 90 KB.
+Android 11+. No icons, no internet permission, under 1 MB.
 
 ## Install
 
@@ -17,15 +17,15 @@ or run `settings` in crease.
 
 ## Layouts
 
-- **Inner screen:** clock, pins, folder tree and widgets on the left half; terminal on the right.
+- **Inner screen:** clock, pins, folder tree and widgets on the left half; all apps and the prompt on the right.
   The gap between the panes sits on the crease.
-- **Cover screen:** one column. Widgets take at most 40% of the height and hide while the keyboard is open.
+- **Cover screen:** one column, with pins and folders above the prompt. Widgets take at most 40% of the height and hide while the keyboard is open.
 
 Widgets belong to the screen you add them on, so each screen keeps its own set.
 
 ## Commands
 
-Tap any green line to run it. Typing shows live suggestions above the prompt.
+Tap any listed name to run it. Output clears when you go home. Typing shows live suggestions above the prompt.
 
 | Command | What it does |
 | --- | --- |
@@ -49,3 +49,7 @@ Commands win over app names. To open an app called `Settings`, use `open setting
 
 Needs JDK 17 and the Android SDK (API 36). `./gradlew testDebugUnitTest` runs the command logic tests.
 `Shell.kt` holds that logic and has no Android imports; `MainActivity.kt` is the UI and widget host.
+
+## Credits
+
+The look is inspired by [Detent](https://github.com/bjarneo/detent). Uses JetBrains Mono under the SIL Open Font License (`licenses/JetBrainsMono-OFL.txt`).
