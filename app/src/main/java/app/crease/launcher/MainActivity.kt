@@ -159,10 +159,14 @@ class MainActivity : Activity(), Host {
         folderBox = null
 
         widgetBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        widgetScroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
+        widgetScroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            isFocusable = false
+        }
         val terminal = buildTerminal()
 
-        root = LinearLayout(this)
+        // Gives clearFocus() somewhere to land, so the cursor doesn't stay in the prompt.
+        root = LinearLayout(this).apply { isFocusableInTouchMode = true }
         if (twoPane) {
             root.orientation = LinearLayout.HORIZONTAL
             val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -250,6 +254,7 @@ class MainActivity : Activity(), Host {
         outputScroll = ScrollView(this).apply {
             isFillViewport = true
             isVerticalScrollBarEnabled = false
+            isFocusable = false
             addView(outputBox)
         }
         suggestBox = LinearLayout(this).apply {
@@ -274,8 +279,9 @@ class MainActivity : Activity(), Host {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
                 InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
             imeOptions = EditorInfo.IME_ACTION_GO or EditorInfo.IME_FLAG_NO_EXTRACT_UI
-            setOnEditorActionListener { _, _, _ ->
-                submit(text.toString())
+            // A hardware Enter reports both key down and key up; act on one of them.
+            setOnEditorActionListener { _, _, event ->
+                if (event == null || event.action == android.view.KeyEvent.ACTION_DOWN) submit(text.toString())
                 true
             }
             addTextChangedListener(object : TextWatcher {
@@ -420,11 +426,29 @@ class MainActivity : Activity(), Host {
         outputBox.gravity = Gravity.BOTTOM
         val fresh = (shell.total - shownTotal).coerceAtMost(shell.output.size.toLong()).toInt()
         val lines = if (shownTotal == 0L) shell.output else shell.output.takeLast(fresh)
+        val firstNew = lines.indexOfLast { it.kind == Kind.ECHO }.coerceAtLeast(0)
+        val anchorIndex = outputBox.childCount + firstNew
         lines.forEach { outputBox.addView(lineView(it)) }
         shownTotal = shell.total
         while (outputBox.childCount > shell.output.size) outputBox.removeViewAt(0)
-        // Not fullScroll(): it moves focus to the last row, and Enter would then tap it.
-        outputScroll.post { outputScroll.scrollTo(0, outputBox.height) }
+        if (lines.isNotEmpty()) scrollToChildAfterLayout(anchorIndex)
+    }
+
+    /**
+     * Shows the latest result from its first line, so a long `ls` starts at "a", not "z".
+     * Not fullScroll(): it moves focus to the last row, and Enter would then tap it.
+     */
+    private fun scrollToChildAfterLayout(index: Int) {
+        val observer = outputBox.viewTreeObserver
+        observer.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                outputBox.viewTreeObserver.removeOnPreDrawListener(this)
+                val child = outputBox.getChildAt(index.coerceAtMost(outputBox.childCount - 1))
+                if (child != null) outputScroll.scrollTo(0, child.top)
+                return true
+            }
+        })
+        outputBox.requestLayout()
     }
 
     private fun perform(action: Action) {
@@ -436,6 +460,7 @@ class MainActivity : Activity(), Host {
     }
 
     private fun submit(cmd: String) {
+        if (cmd.isBlank()) return
         prompt.setText("")
         shell.run(cmd)
         syncOutput()
@@ -518,7 +543,10 @@ class MainActivity : Activity(), Host {
 
     private fun providerList() = launcherApps.profiles.flatMap { user ->
         val serial = userManager.getSerialNumberForUser(user)
-        widgetManager.getInstalledProvidersForProfile(user).map { "${it.provider.flattenToString()}#$serial" to it }
+        // Samsung lists extra same-named variants in its own categories; these aren't home screen widgets.
+        widgetManager.getInstalledProvidersForProfile(user)
+            .filter { it.widgetCategory and AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN != 0 }
+            .map { "${it.provider.flattenToString()}#$serial" to it }
     }
 
     private fun widgetLabel(info: AppWidgetProviderInfo): String {
@@ -529,7 +557,10 @@ class MainActivity : Activity(), Host {
         return if (name.equals(app, true)) app else "$app: $name"
     }
 
-    override fun providers() = providerList().map { (id, info) -> Provider(id, widgetLabel(info)) }
+    // Samsung ships some widgets twice under one name; listing both just looks broken.
+    override fun providers() = providerList()
+        .map { (id, info) -> Provider(id, widgetLabel(info)) }
+        .distinctBy { it.label }
 
     override fun bindWidget(providerId: String) {
         val info = providerList().firstOrNull { it.first == providerId }?.second
