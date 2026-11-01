@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Overlay only. accessibilityEventTypes is left out on purpose, so no events are delivered. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/edge_panel_description"
+    android:isAccessibilityTool="false" />

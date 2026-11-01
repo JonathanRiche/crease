@@ -4,15 +4,37 @@ package app.crease.launcher
 
 data class App(val id: String, val label: String)
 data class Provider(val id: String, val label: String)
-data class WidgetRef(val id: Int, val label: String, val heightDp: Int, val screen: String)
+/** A placed widget. [widthDp] of 0 means it fills the available width. */
+data class WidgetRef(val id: Int, val label: String, val heightDp: Int, val screen: String, val widthDp: Int = 0)
+
+/**
+ * The size a stretched widget should save: kept within limits, and snapping to 0 (fill) when it
+ * reaches nearly full width, so it stays full width on either screen.
+ */
+fun stretchedSize(widthDp: Int, heightDp: Int, maxWidthDp: Int, maxHeightDp: Int, minWidthDp: Int, minHeightDp: Int): Pair<Int, Int> {
+    val width = widthDp.coerceIn(minWidthDp, maxWidthDp.coerceAtLeast(minWidthDp))
+    val height = heightDp.coerceIn(minHeightDp, maxHeightDp.coerceAtLeast(minHeightDp))
+    return (if (width >= maxWidthDp - SNAP_TO_FULL_DP) 0 else width) to height
+}
+
+private const val SNAP_TO_FULL_DP = 12
 
 class State {
     val aliases = linkedMapOf<String, String>()
     val hidden = linkedSetOf<String>()
+    /** Your own display names for apps, by app id. */
+    val names = linkedMapOf<String, String>()
     val pins = mutableListOf<String>()
+    val dock = mutableListOf<DockItem>()
+    /** Apps in the swipe-in panel, independent of home. */
+    val panel = mutableListOf<String>()
     val folders = linkedMapOf<String, MutableList<String>>()
     var theme = DEFAULT_THEME
     var autoKeyboard = false
+    /** Where home apps sit on the inner screen. */
+    var homeAlign = ALIGN_LEFT
+    var background = BG_BLACK
+    var dim = DEFAULT_DIM
 }
 
 enum class Kind { ECHO, OUT, ERR, ITEM }
@@ -37,12 +59,27 @@ interface Host {
     fun themeChanged()
 }
 
+const val ALIGN_LEFT = "left"
+const val ALIGN_CENTER = "center"
+const val ALIGN_RIGHT = "right"
+val HOME_ALIGNS = listOf(ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT)
+
+/** Falls back to left for anything unrecognised in saved settings. */
+fun knownAlign(value: String) = if (value in HOME_ALIGNS) value else ALIGN_LEFT
+
 const val DEFAULT_THEME = "ember"
 
 val THEMES = linkedMapOf(
     "ember" to 0xFFE8A36BL, "moss" to 0xFFA8C686L, "sea" to 0xFF7FB8C4L,
     "rose" to 0xFFE39AA8L, "bone" to 0xFFE6DFCFL,
 )
+
+/** Moves the item at [index] by [delta], staying in bounds. */
+fun <T> MutableList<T>.moveBy(index: Int, delta: Int) {
+    val target = index + delta
+    if (index !in indices || target !in indices) return
+    add(target, removeAt(index))
+}
 
 /** Lower is better; null means no match. */
 fun score(query: String, name: String): Int? {
@@ -306,7 +343,7 @@ class Shell(val state: State, private val host: Host) {
         when (rest.lowercase()) {
             "on" -> state.autoKeyboard = true
             "off" -> state.autoKeyboard = false
-            else -> return err("usage: keyboard on|off (open it automatically on home)")
+            else -> return err("usage: keyboard on|off (open search whenever you go home)")
         }
         host.save()
         out("keyboard ${rest.lowercase()}")
@@ -327,7 +364,8 @@ class Shell(val state: State, private val host: Host) {
             "web <query>",
             "info|uninstall <app>",
             "settings, clear",
-            "theme [name], keyboard on|off",
+            "theme [name]",
+            "keyboard on|off   open search on home",
         ).forEach(::out)
     }
 
