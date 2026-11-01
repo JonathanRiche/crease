@@ -30,6 +30,7 @@ import android.view.WindowInsets
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -39,6 +40,9 @@ import android.window.OnBackInvokedDispatcher
 
 class MainActivity : Activity(), Host {
     private lateinit var store: Store
+    private lateinit var backdrop: Backdrop
+    private var backdropNote: String? = null
+    private var pickingPhoto = false
     private lateinit var shell: Shell
     private lateinit var launcherApps: LauncherApps
     private lateinit var userManager: UserManager
@@ -60,8 +64,30 @@ class MainActivity : Activity(), Host {
     private lateinit var shortcutBox: LinearLayout
     private lateinit var widgetScroll: ScrollView
     private lateinit var widgetBox: LinearLayout
-    private var folderBox: LinearLayout? = null
+    private lateinit var folderBox: LinearLayout
     private lateinit var suggestRow: HorizontalScrollView
+    private lateinit var homeScroll: ScrollView
+    private lateinit var homeStage: LinearLayout
+    private lateinit var panel: LinearLayout
+    private lateinit var headerRow: LinearLayout
+    private lateinit var headerTitle: TextView
+    private lateinit var promptRow: LinearLayout
+    private lateinit var clockView: View
+    private lateinit var hintView: TextView
+    private enum class Mode { HOME, SEARCH, EDIT, MENU, PICK, NAME, ICON }
+    private var mode = Mode.HOME
+    /** Screens to return to on back. */
+    private val trail = ArrayDeque<Mode>()
+    private val widgetCells = HashMap<Int, View>()
+    private var resizingId: Int? = null
+    private var resizeControls: View? = null
+    private var pickDock = false
+    private var pickPanel = false
+    private var iconApp: App? = null
+    private lateinit var dockBar: LinearLayout
+    private var menuApp: App? = null
+    private var pickFolder: String? = null
+    private var namePrompt: ((String) -> Unit)? = null
     private var twoPane = false
     private var idleShown = false
     private var shownTotal = 0L
@@ -76,6 +102,8 @@ class MainActivity : Activity(), Host {
     }
 
     private val accent get() = (THEMES[state.theme] ?: THEMES.getValue(DEFAULT_THEME)).toInt()
+    private val DIM get() = if (state.background == BG_BLACK) BLACK_DIM else PHOTO_DIM
+    private val FAINT get() = if (state.background == BG_BLACK) BLACK_FAINT else PHOTO_FAINT
     private val screen get() = if (resources.configuration.smallestScreenWidthDp >= 600) INNER else COVER
     private fun dp(v: Int) = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics,
@@ -91,6 +119,8 @@ class MainActivity : Activity(), Host {
         store = Store(this)
         store.load(state, widgetRefs)
         shell = Shell(state, this)
+        backdrop = Backdrop(this, state, ::backdropChanged)
+        backdrop.start()
         reconcileWidgets()
 
         window.setDecorFitsSystemWindows(false)
@@ -98,13 +128,13 @@ class MainActivity : Activity(), Host {
         if (Build.VERSION.SDK_INT >= 33) {
             onBackInvokedDispatcher.registerOnBackInvokedCallback(
                 OnBackInvokedDispatcher.PRIORITY_DEFAULT,
-            ) { resetInput() }
+            ) { back() }
         }
         build()
     }
 
     @Deprecated("Used below API 33")
-    override fun onBackPressed() = resetInput()
+    override fun onBackPressed() = back()
 
     override fun onSaveInstanceState(out: Bundle) {
         super.onSaveInstanceState(out)
@@ -119,8 +149,8 @@ class MainActivity : Activity(), Host {
     override fun onStop() {
         super.onStop()
         runCatching { widgetHost.stopListening() }
-        // Come back to a clean screen after using an app.
-        resetInput()
+        // Come back to a clean screen after using an app, but not mid widget setup.
+        if (pendingWidget == AppWidgetManager.INVALID_APPWIDGET_ID && !pickingPhoto) resetInput()
     }
 
     override fun onDestroy() {
@@ -130,17 +160,19 @@ class MainActivity : Activity(), Host {
 
     override fun onResume() {
         super.onResume()
-        if (state.autoKeyboard) showKeyboard()
+        if (state.autoKeyboard && mode == Mode.HOME) openSearch()
     }
 
     /** Pressing home while already home. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        pickingPhoto = false
         resetInput()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        resizingId = null
         build()
     }
 
@@ -153,66 +185,103 @@ class MainActivity : Activity(), Host {
         val cfg = resources.configuration
         val draft = if (::prompt.isInitialized) prompt.text.toString() else ""
         twoPane = cfg.screenWidthDp >= 600 && cfg.screenHeightDp >= 480
-        shownTotal = 0
-        shownGeneration = shell.generation
-        idleShown = false
-        folderBox = null
 
         widgetBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         widgetScroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
             isFocusable = false
+            addView(widgetBox)
         }
-        val terminal = buildTerminal()
-
-        // Gives clearFocus() somewhere to land, so the cursor doesn't stay in the prompt.
-        root = LinearLayout(this).apply { isFocusableInTouchMode = true }
-        if (twoPane) {
-            root.orientation = LinearLayout.HORIZONTAL
-            val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            left.addView(clock(72f))
-            shortcutBox = LinearLayout(this).apply {
+        shortcutBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        folderBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        homeScroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            isFocusable = false
+            isFillViewport = true
+            addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, dp(28), 0, 0)
-            }
-            val folders = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            folderBox = folders
-            widgetBox.setPadding(0, dp(28), 0, 0)
-            widgetScroll.addView(LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
+                // Centred both ways on the cover and when centred on the inner screen.
+                gravity = if (twoPane && innerAlign != ALIGN_CENTER) Gravity.TOP else Gravity.CENTER
                 addView(shortcutBox)
-                addView(folders)
-                addView(widgetBox)
+                addView(folderBox)
             })
-            left.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        }
+        hintView = TextView(this).apply {
+            typeface = mono
+            setTextColor(FAINT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            minHeight = dp(40)
+            gravity = Gravity.CENTER_VERTICAL
+            setOnClickListener { openSearch() }
+            isFocusable = false
+        }
+        dockBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        clockView = clock(if (twoPane) 72f else 56f)
+        homeStage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        panel = buildPanel()
+        val stage = FrameLayout(this).apply {
+            addView(homeStage, FrameLayout.LayoutParams(MATCH, MATCH))
+            addView(panel, FrameLayout.LayoutParams(MATCH, MATCH))
+        }
+
+        root = GestureRoot()
+        root.orientation = LinearLayout.VERTICAL
+        root.background = backdrop.drawable
+        if (twoPane) {
+            val panes = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            left.addView(clockView)
+            when (innerAlign) {
+                ALIGN_LEFT -> {
+                    left.addView(homeScroll, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(28) })
+                    homeStage.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                }
+                ALIGN_RIGHT -> {
+                    // Shares the right half with widgets: they go first, so neither covers the other.
+                    homeStage.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, coverWidgetHeight()))
+                    homeStage.addView(homeScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                }
+                else -> homeStage.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+            }
+            homeStage.addView(hintView)
             // Equal weights put the gap on the crease, so no text sits in the fold.
-            root.addView(left, LinearLayout.LayoutParams(0, MATCH, 1f))
-            root.addView(View(this), LinearLayout.LayoutParams(dp(CREASE_GAP_DP), MATCH))
-            root.addView(terminal, LinearLayout.LayoutParams(0, MATCH, 1f))
+            panes.addView(left, LinearLayout.LayoutParams(0, MATCH, 1f))
+            panes.addView(View(this), LinearLayout.LayoutParams(dp(CREASE_GAP_DP), MATCH))
+            panes.addView(stage, LinearLayout.LayoutParams(0, MATCH, 1f))
+            val body = FrameLayout(this)
+            body.addView(panes, FrameLayout.LayoutParams(MATCH, MATCH))
+            // Only as wide as its text, so touches beside it still reach any widgets.
+            if (innerAlign == ALIGN_CENTER) {
+                body.addView(homeScroll, FrameLayout.LayoutParams(WRAP, MATCH, Gravity.CENTER_HORIZONTAL))
+            }
+            root.addView(body, LinearLayout.LayoutParams(MATCH, 0, 1f))
+            // Spans both halves, so the dock is centred on the whole screen.
+            root.addView(dockBar, LinearLayout.LayoutParams(MATCH, WRAP))
         } else {
-            root.orientation = LinearLayout.VERTICAL
-            root.addView(clock(56f))
-            widgetBox.setPadding(0, dp(20), 0, 0)
-            widgetScroll.addView(widgetBox)
-            root.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, coverWidgetHeight()))
-            root.addView(terminal, LinearLayout.LayoutParams(MATCH, 0, 1f))
+            root.addView(clockView)
+            homeStage.setPadding(0, dp(20), 0, 0)
+            homeStage.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, coverWidgetHeight()))
+            homeStage.addView(homeScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+            homeStage.addView(hintView)
+            homeStage.addView(dockBar)
+            root.addView(stage, LinearLayout.LayoutParams(MATCH, 0, 1f))
         }
         val edge = dp(if (twoPane) 32 else 24)
         root.setOnApplyWindowInsetsListener { v, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
             val ime = insets.getInsets(WindowInsets.Type.ime())
             v.setPadding(bars.left + edge, bars.top + dp(28), bars.right + edge, maxOf(bars.bottom, ime.bottom) + dp(8))
-            // The cover screen is too short for a widget and a keyboard.
-            if (!twoPane) widgetScroll.visibility =
-                if (ime.bottom > 0 || widgetsHere().isEmpty()) View.GONE else View.VISIBLE
             insets
         }
         setContentView(root)
         prompt.setText(draft)
         prompt.setSelection(draft.length)
         renderWidgets()
-        refreshChrome()
-        syncOutput()
+        renderHome()
+        applyMode()
     }
 
     /** Large thin time, with a small lowercase date and one accent block beneath it. */
@@ -249,7 +318,21 @@ class MainActivity : Activity(), Host {
         })
     }
 
-    private fun buildTerminal(): LinearLayout {
+    /** The swipe-up panel: search and commands, plus the edit and menu screens. */
+    private fun buildPanel(): LinearLayout {
+        headerTitle = TextView(this).apply {
+            typeface = mono
+            setTextColor(DIM)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            isSingleLine = true
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(headerTitle, LinearLayout.LayoutParams(0, WRAP, 1f))
+            addView(chip("done", accent) { back() }.apply { setPadding(dp(18), 0, 0, 0) })
+        }
         outputBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         outputScroll = ScrollView(this).apply {
             isFillViewport = true
@@ -287,10 +370,10 @@ class MainActivity : Activity(), Host {
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
-                override fun afterTextChanged(s: Editable?) = renderSuggestions()
+                override fun afterTextChanged(s: Editable?) = queryChanged()
             })
         }
-        val promptRow = LinearLayout(this).apply {
+        promptRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(TextView(context).apply {
@@ -303,6 +386,7 @@ class MainActivity : Activity(), Host {
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            addView(headerRow, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(outputScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
             addView(suggestRow, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(promptRow, LinearLayout.LayoutParams(MATCH, WRAP))
@@ -345,68 +429,321 @@ class MainActivity : Activity(), Host {
         isFocusable = false
     }
 
-    private fun refreshChrome() {
-        renderShortcuts()
-        renderFolders()
-        renderSuggestions()
-        if (idleShown) renderIdle()
-    }
+    /** A control at the end of a row, such as an arrow or a remove mark. */
+    private class Control(val label: String, val color: Int?, val onTap: (TextView) -> Unit)
 
-    private fun renderShortcuts() {
-        if (!twoPane) return
-        shortcutBox.removeAllViews()
-        state.pins.forEach { id ->
-            byIdOrNull(id)?.let { app -> shortcutBox.addView(chip(app.label) { perform(Action("open ${app.label}")) }) }
+    private fun row(
+        label: String,
+        color: Int = TEXT,
+        onHold: (() -> Unit)? = null,
+        controls: List<Control> = emptyList(),
+        onTap: () -> Unit,
+    ) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(chip(label, color, onTap).apply {
+            isSingleLine = true
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            // Setting single line clears the minimum height, so restore the finger-sized row.
+            minHeight = dp(44)
+            if (onHold != null) setOnLongClickListener {
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                onHold()
+                true
+            }
+        }, LinearLayout.LayoutParams(0, WRAP, 1f))
+        controls.forEach { control ->
+            addView(TextView(context).apply {
+                text = control.label
+                typeface = mono
+                setTextColor(control.color ?: DIM)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                gravity = Gravity.CENTER
+                minHeight = dp(40)
+                minWidth = dp(44)
+                setOnClickListener { control.onTap(this) }
+                isFocusable = false
+            })
         }
     }
 
+    // ---- home ----
+
+    private fun renderHome() {
+        shortcutBox.removeAllViews()
+        shortcutBox.gravity = homeGravity
+        state.pins.mapNotNull(::byIdOrNull).forEach { app ->
+            shortcutBox.addView(row(app.label, onHold = { openMenu(app) }) { launch(app) })
+            alignHomeRow(shortcutBox.getChildAt(shortcutBox.childCount - 1))
+        }
+        renderFolders()
+        renderDock()
+        hintView.text = if (state.pins.isEmpty() && state.folders.isEmpty()) {
+            "swipe up for apps · hold to edit"
+        } else {
+            "apps"
+        }
+        // Once there's a dock, the bottom of the screen is busy enough.
+        hintView.visibility = if (dockBar.childCount > 0) View.GONE else View.VISIBLE
+    }
+
+    private fun renderDock() {
+        dockBar.removeAllViews()
+        state.dock.forEach { item ->
+            val app = byIdOrNull(item.appId) ?: return@forEach
+            val icon = item.icon?.takeIf { it in DOCK_ICONS }
+            val content: View = if (icon != null) IconView(this, icon, TEXT) else TextView(this).apply {
+                text = app.label.lowercase()
+                typeface = mono
+                setTextColor(TEXT)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                gravity = Gravity.CENTER
+                isSingleLine = true
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }
+            dockBar.addView(FrameLayout(this).apply {
+                val size = if (icon != null) dp(DOCK_ICON_DP) else WRAP
+                addView(content, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
+                contentDescription = app.label
+                isFocusable = false
+                setOnClickListener { launch(app) }
+                setOnLongClickListener {
+                    performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                    openMenu(app)
+                    true
+                }
+            }, if (twoPane) {
+                // Stretched across this wide screen the buttons would drift far apart.
+                LinearLayout.LayoutParams(dp(DOCK_SLOT_DP), dp(DOCK_HEIGHT_DP))
+            } else {
+                LinearLayout.LayoutParams(0, dp(DOCK_HEIGHT_DP), 1f)
+            })
+        }
+    }
+
+    private val innerAlign get() = state.homeAlign
+    private val homeGravity get() = when {
+        !twoPane || innerAlign == ALIGN_CENTER -> Gravity.CENTER_HORIZONTAL
+        innerAlign == ALIGN_RIGHT -> Gravity.END
+        else -> Gravity.START
+    }
+
+    /**
+     * Shrinks a home row to its text and removes the padding that spaces chips apart, which would
+     * push it off-centre. A full-width row would also take taps and holds on the empty space beside it.
+     */
+    private fun alignHomeRow(view: View) {
+        if (homeGravity == Gravity.START) return
+        view.layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
+        val text = (view as? ViewGroup)?.getChildAt(0) as? TextView ?: view as? TextView ?: return
+        text.setPadding(0, 0, 0, 0)
+    }
+
     private fun renderFolders() {
-        val box = folderBox ?: return
-        box.removeAllViews()
+        folderBox.removeAllViews()
+        folderBox.gravity = homeGravity
         state.folders.forEach { (name, ids) ->
             val isOpen = name in openFolders
-            box.addView(chip("$name/", if (isOpen) accent else DIM) {
+            folderBox.addView(chip("$name/", if (isOpen) accent else DIM) {
                 if (!openFolders.add(name)) openFolders.remove(name)
                 renderFolders()
             })
+            alignHomeRow(folderBox.getChildAt(folderBox.childCount - 1))
             if (isOpen) ids.mapNotNull(::byIdOrNull).forEach { app ->
-                box.addView(chip("  ${app.label}") { perform(Action("open ${app.label}")) })
+                folderBox.addView(
+                    row(if (homeGravity == Gravity.START) "  ${app.label}" else app.label, onHold = { openMenu(app) }) { launch(app) },
+                )
+                alignHomeRow(folderBox.getChildAt(folderBox.childCount - 1))
             }
         }
     }
 
+    // ---- modes ----
+
+    private fun applyMode() {
+        val home = mode == Mode.HOME
+        backdrop.setPanelOpen(!home)
+        homeStage.visibility = if (home) View.VISIBLE else View.GONE
+        dockBar.visibility = if (home) View.VISIBLE else View.GONE
+        // Centred apps sit over both halves, so they'd collide with search and edit.
+        if (twoPane && innerAlign == ALIGN_CENTER) homeScroll.visibility = if (home) View.VISIBLE else View.GONE
+        panel.visibility = if (home) View.GONE else View.VISIBLE
+        // The cover needs the room; the inner screen keeps its clock on the other half.
+        clockView.visibility = if (home || twoPane) View.VISIBLE else View.GONE
+        val typing = mode == Mode.SEARCH || mode == Mode.NAME
+        promptRow.visibility = if (typing) View.VISIBLE else View.GONE
+        headerRow.visibility = if (mode == Mode.SEARCH || home) View.GONE else View.VISIBLE
+        if (typing) showKeyboard() else hideKeyboard()
+        shell.clearOutput()
+        when (mode) {
+            Mode.HOME -> outputBox.removeAllViews()
+            Mode.SEARCH, Mode.PICK -> {
+                outputBox.removeAllViews()
+                idleShown = false
+                shownGeneration = shell.generation
+                shownTotal = shell.total
+                headerTitle.text = if (pickDock) "in dock" else if (pickPanel) "in edge panel" else pickFolder?.let { "in $it/" } ?: "on home"
+                syncOutput()
+            }
+            Mode.NAME -> {
+                outputBox.removeAllViews()
+                suggestRow.visibility = View.GONE
+            }
+            Mode.EDIT -> renderEdit()
+            Mode.MENU -> renderMenu()
+            Mode.ICON -> renderIcons()
+        }
+        if (home) renderHome()
+    }
+
+    private fun setMode(next: Mode) {
+        resizingId = null
+        prompt.setText("")
+        mode = next
+        applyMode()
+    }
+
+    private fun openSearch() {
+        trail.clear()
+        namePrompt = null
+        setMode(Mode.SEARCH)
+    }
+
+    private fun openEdit() {
+        trail.clear()
+        backdropNote = null
+        setMode(Mode.EDIT)
+    }
+
+    private fun push(next: Mode) {
+        trail.addLast(mode)
+        setMode(next)
+    }
+
+    private fun openMenu(app: App) {
+        menuApp = app
+        push(Mode.MENU)
+    }
+
+    private fun openPicker(folder: String?, dock: Boolean = false, edgePanel: Boolean = false) {
+        pickFolder = folder
+        pickDock = dock
+        pickPanel = edgePanel
+        push(Mode.PICK)
+    }
+
+    private fun openIcons(app: App) {
+        iconApp = app
+        push(Mode.ICON)
+    }
+
+    private fun askName(title: String, draft: String, onName: (String) -> Unit) {
+        namePrompt = onName
+        headerTitle.text = title
+        push(Mode.NAME)
+        prompt.hint = title
+        prompt.setText(draft)
+        prompt.setSelection(draft.length)
+    }
+
+    private fun goHome() {
+        namePrompt = null
+        pickFolder = null
+        pickDock = false
+        pickPanel = false
+        trail.clear()
+        prompt.hint = "search"
+        if (::prompt.isInitialized) setMode(Mode.HOME)
+    }
+
+    private fun back() {
+        if (resizingId != null) return stopResizing()
+        namePrompt = null
+        pickFolder = null
+        pickDock = false
+        pickPanel = false
+        prompt.hint = "search"
+        val previous = trail.removeLastOrNull() ?: return goHome()
+        setMode(previous)
+    }
+
+    private fun hideKeyboard() {
+        prompt.clearFocus()
+        getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(prompt.windowToken, 0)
+    }
+
+    private fun showKeyboard() {
+        prompt.requestFocus()
+        prompt.post { prompt.windowInsetsController?.show(WindowInsets.Type.ime()) }
+    }
+
+    // ---- search ----
+
+    private fun queryChanged() {
+        if (mode != Mode.SEARCH) return
+        if (shell.output.isNotEmpty() && prompt.text.isNotEmpty()) shell.clearOutput()
+        syncOutput()
+        renderSuggestions()
+    }
+
+    /** Only commands and arguments here: apps already fill the list above. */
     private fun renderSuggestions() {
         suggestBox.removeAllViews()
-        val found = shell.suggest(prompt.text.toString())
+        val found = shell.suggest(prompt.text.toString()).filterNot { it.fill.startsWith("open ") }
         found.forEachIndexed { i, s ->
             suggestBox.addView(chip(s.label, if (i == 0) accent else DIM) { perform(Action(s.fill, s.run)) })
         }
         suggestRow.visibility = if (found.isEmpty()) View.GONE else View.VISIBLE
     }
 
-    /**
-     * What sits in the output area when nothing has been run. Inner screen: every app.
-     * Cover screen: pins and folders, near the thumb.
-     */
+    /** Apps matching the query, each with a mark that puts it on home or in a folder. */
     private fun renderIdle() {
         outputBox.removeAllViews()
         idleShown = true
-        if (twoPane) {
-            outputBox.gravity = Gravity.TOP
-            shell.visibleApps().forEach { app ->
-                outputBox.addView(lineView(Line(app.label, Kind.ITEM, Action("open ${app.label}"))))
-            }
-        } else {
-            outputBox.gravity = Gravity.BOTTOM
-            state.pins.mapNotNull(::byIdOrNull).forEach { app ->
-                outputBox.addView(lineView(Line(app.label, Kind.ITEM, Action("open ${app.label}"))))
-            }
-            state.folders.keys.forEach { name ->
-                outputBox.addView(chip("$name/", DIM) { perform(Action("ls $name")) })
-            }
+        outputBox.gravity = Gravity.TOP
+        val query = if (mode == Mode.SEARCH) prompt.text.toString().trim() else ""
+        val folder = pickFolder
+        val members = when {
+            folder != null -> state.folders[folder] ?: return
+            pickPanel -> state.panel
+            else -> state.pins
         }
-        outputScroll.post { outputScroll.scrollTo(0, if (twoPane) 0 else outputBox.height) }
+        val dock = pickDock
+        fun has(id: String) = if (dock) state.dock.any { it.appId == id } else id in members
+        val all = shell.visibleApps()
+        val apps = if (query.isEmpty()) all else all
+            .mapNotNull { a -> score(query, a.label)?.let { a to it } }
+            .sortedWith(compareBy({ it.second }, { it.first.label.lowercase() }))
+            .map { it.first }
+        apps.forEach { app ->
+            fun mark() = if (has(app.id)) "✓" else "+"
+            fun toggle(view: TextView?) {
+                if (dock) {
+                    if (!state.dock.toggleApp(app.id, iconFor(app))) headerTitle.text = "dock is full ($DOCK_MAX)"
+                } else if (!members.remove(app.id)) {
+                    members += app.id
+                }
+                save()
+                view?.text = mark()
+                view?.setTextColor(if (has(app.id)) accent else DIM)
+                renderHome()
+            }
+            val control = Control(mark(), if (has(app.id)) accent else DIM) { toggle(it) }
+            outputBox.addView(
+                row(app.label, onHold = { openMenu(app) }, controls = listOf(control)) {
+                    if (mode == Mode.PICK) {
+                        toggle(null)
+                        renderIdle()
+                    } else {
+                        launch(app)
+                    }
+                },
+            )
+        }
+        outputScroll.post { outputScroll.scrollTo(0, 0) }
     }
+
+    private fun iconFor(app: App) = suggestIcon(app.label, app.id.substringBefore('/'))
 
     private fun syncOutput() {
         if (shownGeneration != shell.generation) {
@@ -416,16 +753,17 @@ class MainActivity : Activity(), Host {
             shownTotal = shell.total
         }
         if (shell.output.isEmpty()) {
-            if (!idleShown) renderIdle()
+            if (mode == Mode.SEARCH || mode == Mode.PICK) renderIdle()
             return
         }
+        if (mode != Mode.SEARCH) return
         if (idleShown) {
             outputBox.removeAllViews()
             idleShown = false
         }
         outputBox.gravity = Gravity.BOTTOM
         val fresh = (shell.total - shownTotal).coerceAtMost(shell.output.size.toLong()).toInt()
-        val lines = if (shownTotal == 0L) shell.output else shell.output.takeLast(fresh)
+        val lines = shell.output.takeLast(fresh)
         val firstNew = lines.indexOfLast { it.kind == Kind.ECHO }.coerceAtLeast(0)
         val anchorIndex = outputBox.childCount + firstNew
         lines.forEach { outputBox.addView(lineView(it)) }
@@ -460,26 +798,493 @@ class MainActivity : Activity(), Host {
     }
 
     private fun submit(cmd: String) {
+        namePrompt?.let { onName ->
+            namePrompt = null
+            onName(cmd.trim())
+            return
+        }
         if (cmd.isBlank()) return
         prompt.setText("")
         shell.run(cmd)
-        syncOutput()
-        refreshChrome()
+        if (mode == Mode.SEARCH) {
+            syncOutput()
+            renderSuggestions()
+        }
+        renderHome()
     }
 
-    /** Back to the clean home screen: no draft, no output, no keyboard. */
-    private fun resetInput() {
-        prompt.setText("")
-        prompt.clearFocus()
-        getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(prompt.windowToken, 0)
-        shell.clearOutput()
-        syncOutput()
+    /** Clean home screen. Also used by the shell when an app opens. */
+    private fun resetInput() = goHome()
+
+    // ---- edit ----
+
+    private fun section(title: String) = TextView(this).apply {
+        text = title
+        typeface = mono
+        setTextColor(FAINT)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        setPadding(0, dp(18), 0, dp(4))
     }
 
-    private fun showKeyboard() {
-        prompt.requestFocus()
-        prompt.post {
-            getSystemService(InputMethodManager::class.java).showSoftInput(prompt, InputMethodManager.SHOW_IMPLICIT)
+    private fun renderEdit() {
+        outputBox.removeAllViews()
+        outputBox.gravity = Gravity.TOP
+        headerTitle.text = "edit home"
+        val edit = {
+            save()
+            renderHome()
+            renderEdit()
+        }
+
+        outputBox.addView(section("apps"))
+        val pins = state.pins.mapNotNull(::byIdOrNull)
+        pins.forEach { app ->
+            val i = state.pins.indexOf(app.id)
+            outputBox.addView(
+                row(
+                    app.label,
+                    controls = listOf(
+                        Control("↑", null) { state.pins.moveBy(i, -1); edit() },
+                        Control("↓", null) { state.pins.moveBy(i, 1); edit() },
+                        Control("×", null) { state.pins.removeAt(i); edit() },
+                    ),
+                ) { openMenu(app) },
+            )
+        }
+        outputBox.addView(chip("+ choose apps", accent) { openPicker(null) })
+        if (twoPane) outputBox.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(chip("position:", FAINT) {})
+            HOME_ALIGNS.forEach { align ->
+                addView(chip(align, if (align == state.homeAlign) accent else DIM) {
+                    state.homeAlign = align
+                    save()
+                    build()
+                })
+            }
+        })
+
+        outputBox.addView(section("dock"))
+        state.dock.toList().forEachIndexed { i, item ->
+            val app = byIdOrNull(item.appId) ?: return@forEachIndexed
+            val line = row(
+                app.label,
+                controls = listOf(
+                    Control("↑", null) { state.dock.moveBy(i, -1); edit() },
+                    Control("↓", null) { state.dock.moveBy(i, 1); edit() },
+                    Control("×", null) { state.dock.removeAt(i); edit() },
+                ),
+            ) { openIcons(app) }
+            item.icon?.takeIf { it in DOCK_ICONS }?.let { icon ->
+                line.addView(
+                    IconView(this, icon, DIM),
+                    0,
+                    LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(12) },
+                )
+            }
+            outputBox.addView(line)
+        }
+        outputBox.addView(chip("+ choose dock apps", accent) { openPicker(null, dock = true) })
+
+        outputBox.addView(section("folders"))
+        state.folders.keys.toList().forEach { name ->
+            val count = state.folders[name].orEmpty().count { byIdOrNull(it) != null }
+            outputBox.addView(
+                row(
+                    "$name/  $count",
+                    controls = listOf(Control("×", null) { state.folders.remove(name); openFolders.remove(name); edit() }),
+                ) { openPicker(name) },
+            )
+        }
+        outputBox.addView(chip("+ new folder", accent) {
+            askName("folder name", "") { typed ->
+                val name = typed.replace(Regex("\\s+"), "-")
+                if (name.isNotEmpty() && state.folders.keys.none { it.equals(name, true) }) {
+                    state.folders[name] = mutableListOf()
+                    save()
+                }
+                back()
+            }
+        })
+
+        outputBox.addView(section("widgets on this screen"))
+        widgetsHere().forEach { ref ->
+            // Two lines: widget names are long, and the cover screen is narrow.
+            outputBox.addView(chip(ref.label) {})
+            outputBox.addView(
+                row(
+                    "${ref.heightDp}dp",
+                    DIM,
+                    controls = listOf(
+                        Control("↑", null) { moveWidget(ref, -1); edit() },
+                        Control("↓", null) { moveWidget(ref, 1); edit() },
+                        Control("−", null) { resizeWidget(ref, (ref.heightDp - WIDGET_STEP_DP).coerceAtLeast(MIN_WIDGET_DP)); edit() },
+                        Control("+", null) { resizeWidget(ref, ref.heightDp + WIDGET_STEP_DP); edit() },
+                        Control("×", null) { removeWidget(ref); edit() },
+                    ),
+                ) {},
+            )
+        }
+        outputBox.addView(chip("+ add widget", accent) {
+            openSearch()
+            prompt.post { submit("widget add") }
+        })
+
+        outputBox.addView(section("edge panel"))
+        state.panel.mapNotNull(::byIdOrNull).forEach { app ->
+            val i = state.panel.indexOf(app.id)
+            outputBox.addView(
+                row(
+                    app.label,
+                    controls = listOf(
+                        Control("↑", null) { state.panel.moveBy(i, -1); edit() },
+                        Control("↓", null) { state.panel.moveBy(i, 1); edit() },
+                        Control("×", null) { state.panel.removeAt(i); edit() },
+                    ),
+                ) { openMenu(app) },
+            )
+        }
+        outputBox.addView(chip("+ choose panel apps", accent) { openPicker(null, edgePanel = true) })
+        outputBox.addView(row(if (EdgePanelAccess.isEnabled(this)) "panel on" else "panel off") {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        })
+        outputBox.addView(row(if (EdgePanelAccess.hasUsageAccess(this)) "recents on" else "recents off") {
+            startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+        })
+
+        outputBox.addView(section("colour"))
+        outputBox.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            THEMES.keys.forEach { name ->
+                addView(chip(name, if (name == state.theme) accent else DIM) {
+                    state.theme = name
+                    save()
+                    build()
+                })
+            }
+        }.let { strip ->
+            HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(strip)
+            }
+        })
+
+        outputBox.addView(section("background"))
+        fun marked(kind: String) = if (state.background == kind) accent else DIM
+        outputBox.addView(chip("black", marked(BG_BLACK)) { backdrop.select(BG_BLACK) })
+        outputBox.addView(chip("system wallpaper", marked(BG_WALLPAPER)) { backdrop.select(BG_WALLPAPER) })
+        outputBox.addView(chip(if (backdrop.importing) "loading photo..." else "choose photo", marked(BG_PHOTO)) {
+            pickingPhoto = true
+            if (!backdrop.launchPicker(REQ_PHOTO)) pickingPhoto = false
+        })
+        backdropNote?.let { outputBox.addView(lineView(Line(it, Kind.ERR))) }
+        if (state.background != BG_BLACK) {
+            outputBox.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(chip("dim:", FAINT) {})
+                DIM_LEVELS.keys.forEach { level ->
+                    addView(chip(level, if (level == state.dim) accent else DIM) { backdrop.setDim(level) })
+                }
+            })
+        }
+    }
+
+    private fun backdropChanged(note: String?, recolour: Boolean) {
+        backdropNote = note
+        save()
+        if (recolour) {
+            val y = outputScroll.scrollY
+            build()
+            outputScroll.post { outputScroll.scrollTo(0, y) }
+        } else if (mode == Mode.EDIT) {
+            renderEdit()
+        }
+    }
+
+    /** Pick what a dock button shows: any icon, or the app's name. */
+    private fun renderIcons() {
+        val app = iconApp ?: return back()
+        outputBox.removeAllViews()
+        outputBox.gravity = Gravity.TOP
+        headerTitle.text = "icon for ${app.label.lowercase()}"
+        val current = state.dock.firstOrNull { it.appId == app.id }?.icon
+        fun choose(icon: String?) {
+            val i = state.dock.indexOfFirst { it.appId == app.id }
+            if (i >= 0) state.dock[i] = state.dock[i].copy(icon = icon)
+            save()
+            renderHome()
+            back()
+        }
+        outputBox.addView(chip("text: ${app.label}", if (current == null) accent else TEXT) { choose(null) })
+        DOCK_ICONS.chunked(ICON_COLUMNS).forEach { names ->
+            outputBox.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                names.forEach { name ->
+                    addView(FrameLayout(context).apply {
+                        contentDescription = name
+                        isFocusable = false
+                        setOnClickListener { choose(name) }
+                        addView(
+                            IconView(context, name, if (name == current) accent else TEXT),
+                            FrameLayout.LayoutParams(dp(DOCK_ICON_DP), dp(DOCK_ICON_DP), Gravity.CENTER),
+                        )
+                    }, LinearLayout.LayoutParams(0, dp(DOCK_HEIGHT_DP), 1f))
+                }
+                // Keep a short last row on the same columns.
+                repeat(ICON_COLUMNS - names.size) {
+                    addView(View(context), LinearLayout.LayoutParams(0, 0, 1f))
+                }
+            })
+        }
+    }
+
+    private fun moveWidget(ref: WidgetRef, delta: Int) {
+        val here = widgetsHere()
+        val neighbour = here.getOrNull(here.indexOf(ref) + delta) ?: return
+        val a = widgetRefs.indexOf(ref)
+        val b = widgetRefs.indexOf(neighbour)
+        widgetRefs[a] = neighbour
+        widgetRefs[b] = ref
+        save()
+        rerenderWidgets()
+    }
+
+    // ---- app menu ----
+
+    private fun renderMenu() {
+        val app = menuApp ?: return back()
+        outputBox.removeAllViews()
+        outputBox.gravity = Gravity.TOP
+        headerTitle.text = app.label.lowercase()
+        val (component, user) = appTargets[app.id] ?: return back()
+        if (launcherApps.hasShortcutHostPermission()) {
+            val query = LauncherApps.ShortcutQuery()
+                .setPackage(component.packageName)
+                .setQueryFlags(
+                    LauncherApps.ShortcutQuery.FLAG_MATCH_DYNAMIC or
+                        LauncherApps.ShortcutQuery.FLAG_MATCH_MANIFEST or
+                        LauncherApps.ShortcutQuery.FLAG_MATCH_PINNED,
+                )
+            runCatching { launcherApps.getShortcuts(query, user) }.getOrNull().orEmpty().take(MAX_SHORTCUTS).forEach { shortcut ->
+                outputBox.addView(row(shortcut.shortLabel?.toString() ?: shortcut.id) {
+                    runCatching { launcherApps.startShortcut(shortcut, null, null) }
+                    goHome()
+                })
+            }
+        }
+        outputBox.addView(section("edit"))
+        val onHome = app.id in state.pins
+        outputBox.addView(row(if (onHome) "remove from home" else "add to home") {
+            if (onHome) state.pins.remove(app.id) else state.pins += app.id
+            save()
+            renderHome()
+            renderMenu()
+        })
+        val inPanel = app.id in state.panel
+        outputBox.addView(row(if (inPanel) "remove from edge panel" else "add to edge panel") {
+            if (inPanel) state.panel.remove(app.id) else state.panel += app.id
+            save()
+            renderMenu()
+        })
+        val dockItem = state.dock.firstOrNull { it.appId == app.id }
+        outputBox.addView(row(if (dockItem != null) "remove from dock" else "add to dock") {
+            if (!state.dock.toggleApp(app.id, iconFor(app))) headerTitle.text = "dock is full ($DOCK_MAX)"
+            save()
+            renderHome()
+            if (headerTitle.text.toString().startsWith("dock is full").not()) renderMenu()
+        })
+        if (dockItem != null) outputBox.addView(row("change dock icon") { openIcons(app) })
+        outputBox.addView(row("rename") {
+            askName("new name, blank to reset", state.names[app.id].orEmpty()) { typed ->
+                if (typed.isEmpty()) state.names.remove(app.id) else state.names[app.id] = typed
+                save()
+                appCache = null
+                menuApp = byIdOrNull(app.id)
+                renderHome()
+                back()
+            }
+        })
+        outputBox.addView(row("hide from search") {
+            state.hidden += app.id
+            state.pins.remove(app.id)
+            state.dock.removeAll { it.appId == app.id }
+            state.panel.remove(app.id)
+            save()
+            renderHome()
+            back()
+        })
+        outputBox.addView(row("app info") { info(app) })
+        outputBox.addView(row("uninstall") { uninstall(app) })
+    }
+
+    /** Sees touches before its children, for swipes and for holding an empty area. */
+    private inner class GestureRoot : LinearLayout(this@MainActivity) {
+        private var startX = 0f
+        private var startY = 0f
+        private var canSwipe = false
+        private var consumed = false
+        private val slop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+        private var heldWidget: Int? = null
+        private val holdWidget = Runnable {
+            val id = heldWidget ?: return@Runnable
+            if (mode != Mode.HOME) return@Runnable
+            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            // Takes the gesture back from the widget, so letting go doesn't also tap it.
+            val now = android.os.SystemClock.uptimeMillis()
+            val cancel = android.view.MotionEvent.obtain(now, now, android.view.MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+            super.dispatchTouchEvent(cancel)
+            cancel.recycle()
+            startResizing(id)
+        }
+
+        // What the finger is doing in resize mode.
+        private var stretchRight = false
+        private var stretchBottom = false
+        private var passToControls = false
+        private var startWidth = 0
+        private var startHeight = 0
+
+        private fun handleResize(id: Int, e: android.view.MotionEvent): Boolean {
+            val cell = widgetCells[id] ?: run {
+                resizingId = null
+                return true
+            }
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    startX = e.rawX
+                    startY = e.rawY
+                    stretchRight = false
+                    stretchBottom = false
+                    passToControls = inside(resizeControls, e.rawX, e.rawY)
+                    if (passToControls) return super.dispatchTouchEvent(e)
+                    val r = android.graphics.Rect()
+                    cell.getGlobalVisibleRect(r)
+                    val grip = dp(RESIZE_GRIP_DP)
+                    val withinY = e.rawY >= r.top - grip && e.rawY <= r.bottom + grip
+                    val withinX = e.rawX >= r.left - grip && e.rawX <= r.right + grip
+                    stretchRight = kotlin.math.abs(e.rawX - r.right) <= grip && withinY
+                    stretchBottom = kotlin.math.abs(e.rawY - r.bottom) <= grip && withinX
+                    startWidth = cell.width
+                    startHeight = cell.height
+                    // A touch away from the widget and its grips finishes.
+                    if (!stretchRight && !stretchBottom && !inside(cell, e.rawX, e.rawY)) stopResizing()
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    if (passToControls) return super.dispatchTouchEvent(e)
+                    if (stretchRight || stretchBottom) {
+                        val width = if (stretchRight) startWidth + (e.rawX - startX).toInt() else startWidth
+                        val height = if (stretchBottom) startHeight + (e.rawY - startY).toInt() else startHeight
+                        val params = cell.layoutParams
+                        params.width = width.coerceIn(dp(MIN_WIDGET_WIDTH_DP), dp(fullWidgetWidthDp))
+                        params.height = height.coerceIn(dp(MIN_WIDGET_DP), dp(maxWidgetHeightDp))
+                        cell.layoutParams = params
+                    }
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    if (passToControls) {
+                        passToControls = false
+                        return super.dispatchTouchEvent(e)
+                    }
+                    if (stretchRight || stretchBottom) {
+                        val density = resources.displayMetrics.density
+                        val (w, h) = stretchedSize(
+                            (cell.layoutParams.width / density).toInt(),
+                            (cell.layoutParams.height / density).toInt(),
+                            fullWidgetWidthDp,
+                            maxWidgetHeightDp,
+                            MIN_WIDGET_WIDTH_DP,
+                            MIN_WIDGET_DP,
+                        )
+                        stretchRight = false
+                        stretchBottom = false
+                        setWidgetSize(id, w, h)
+                    }
+                }
+            }
+            return true
+        }
+
+        private val hold = Runnable {
+            if (mode == Mode.HOME) {
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                openEdit()
+            }
+        }
+
+        init {
+            // Gives clearFocus() somewhere to land, so the cursor doesn't stay in the prompt.
+            isFocusableInTouchMode = true
+        }
+
+        private fun inside(view: View?, x: Float, y: Float): Boolean {
+            if (view == null || view.visibility != View.VISIBLE) return false
+            val r = android.graphics.Rect()
+            return view.getGlobalVisibleRect(r) && r.contains(x.toInt(), y.toInt())
+        }
+
+        private fun hitsControl(view: View, x: Float, y: Float): Boolean {
+            if (!inside(view, x, y)) return false
+            if (view.isClickable) return true
+            return view is ViewGroup && (0 until view.childCount).any { hitsControl(view.getChildAt(it), x, y) }
+        }
+
+        private fun allowSwipe(x: Float, y: Float) = when (mode) {
+            // Widgets keep their own scrolling, and so does a home list that overflows.
+            Mode.HOME -> !inside(widgetBox, x, y) && !(inside(homeScroll, x, y) && homeScroll.canScrollVertically(1))
+            else -> inside(outputScroll, x, y) && !outputScroll.canScrollVertically(-1)
+        }
+
+        override fun dispatchTouchEvent(e: android.view.MotionEvent): Boolean {
+            resizingId?.let { return handleResize(it, e) }
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    consumed = false
+                    startX = e.rawX
+                    startY = e.rawY
+                    canSwipe = allowSwipe(e.rawX, e.rawY)
+                    heldWidget = if (mode == Mode.HOME) {
+                        widgetCells.entries.firstOrNull { inside(it.value, e.rawX, e.rawY) }?.key
+                    } else {
+                        null
+                    }
+                    if (heldWidget != null) {
+                        postDelayed(holdWidget, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                    }
+                    if (mode == Mode.HOME && !inside(widgetBox, e.rawX, e.rawY) && !hitsControl(this, e.rawX, e.rawY)) {
+                        postDelayed(hold, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                    }
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    if (consumed) return true
+                    val dx = e.rawX - startX
+                    val dy = e.rawY - startY
+                    if (kotlin.math.hypot(dx, dy) > slop) {
+                        removeCallbacks(hold)
+                        removeCallbacks(holdWidget)
+                    }
+                    if (canSwipe && kotlin.math.abs(dy) > dp(SWIPE_DP) && kotlin.math.abs(dy) > 2 * kotlin.math.abs(dx)) {
+                        val up = dy < 0
+                        if (mode == Mode.HOME && up) openSearch()
+                        else if (mode != Mode.HOME && !up) back()
+                        else return super.dispatchTouchEvent(e)
+                        val cancel = android.view.MotionEvent.obtain(e)
+                        cancel.action = android.view.MotionEvent.ACTION_CANCEL
+                        super.dispatchTouchEvent(cancel)
+                        cancel.recycle()
+                        consumed = true
+                        return true
+                    }
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    removeCallbacks(hold)
+                    removeCallbacks(holdWidget)
+                    if (consumed) {
+                        consumed = false
+                        return true
+                    }
+                }
+            }
+            return super.dispatchTouchEvent(e)
         }
     }
 
@@ -487,7 +1292,8 @@ class MainActivity : Activity(), Host {
 
     private fun appsChanged() {
         appCache = null
-        refreshChrome()
+        renderHome()
+        if (mode == Mode.SEARCH || mode == Mode.PICK) syncOutput()
     }
 
     private fun byIdOrNull(id: String) = apps().firstOrNull { it.id == id }
@@ -500,7 +1306,8 @@ class MainActivity : Activity(), Host {
             .map { info ->
                 val id = "${info.componentName.flattenToString()}#$serial"
                 appTargets[id] = info.componentName to user
-                App(id, if (isMain) info.label.toString() else "${info.label} (work)")
+                val name = state.names[id] ?: info.label.toString()
+                App(id, if (isMain) name else "$name (work)")
             }
     }.sortedBy { it.label.lowercase() }.also { appCache = it }
 
@@ -620,6 +1427,11 @@ class MainActivity : Activity(), Host {
     override fun onActivityResult(request: Int, result: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(request, result, data)
+        if (request == REQ_PHOTO) {
+            pickingPhoto = false
+            if (result == RESULT_OK) backdrop.onPicked(data?.data)
+            return
+        }
         val id = pendingWidget
         if (id == AppWidgetManager.INVALID_APPWIDGET_ID) return
         if (result != RESULT_OK) return cancelWidget(id, "widget cancelled")
@@ -659,30 +1471,115 @@ class MainActivity : Activity(), Host {
 
     /** The cover keeps at least 60% of its height for the terminal. */
     private fun coverWidgetHeight(): Int {
-        val wanted = widgetsHere().sumOf { it.heightDp + WIDGET_GAP_DP }
+        val controls = if (resizingId != null && widgetRefById(resizingId!!)?.screen == screen) RESIZE_CONTROLS_DP else 0
+        val wanted = widgetsHere().sumOf { it.heightDp + WIDGET_GAP_DP } + controls
         return dp(minOf(wanted, (resources.configuration.screenHeightDp * 0.4f).toInt()))
     }
 
     private fun rerenderWidgets() {
-        if (!twoPane) widgetScroll.layoutParams = widgetScroll.layoutParams.apply { height = coverWidgetHeight() }
+        if (!twoPane || innerAlign == ALIGN_RIGHT) {
+            widgetScroll.layoutParams = widgetScroll.layoutParams.apply { height = coverWidgetHeight() }
+        }
         renderWidgets()
         root.requestApplyInsets()
     }
 
+    private val fullWidgetWidthDp: Int
+        get() {
+            val cfg = resources.configuration
+            return (if (twoPane) (cfg.screenWidthDp - CREASE_GAP_DP) / 2 else cfg.screenWidthDp) - PANE_MARGIN_DP
+        }
+
+    /** Where widgets share a column with apps they stop at 40%, which is also all the cover shows. */
+    private val maxWidgetHeightDp: Int
+        get() {
+            val share = if (!twoPane || innerAlign == ALIGN_RIGHT) 0.4f else 0.8f
+            return (resources.configuration.screenHeightDp * share).toInt() - WIDGET_GAP_DP
+        }
+
     private fun renderWidgets() {
         widgetBox.removeAllViews()
-        val cfg = resources.configuration
-        val widthDp = (if (twoPane) (cfg.screenWidthDp - CREASE_GAP_DP) / 2 else cfg.screenWidthDp) - PANE_MARGIN_DP
+        widgetCells.clear()
+        resizeControls = null
+        val full = fullWidgetWidthDp
         widgetsHere().forEach { ref ->
             val info = widgetManager.getAppWidgetInfo(ref.id) ?: return@forEach
             val view = widgetHost.createView(applicationContext, ref.id, info)
             view.setAppWidget(ref.id, info)
+            val widthDp = if (ref.widthDp > 0) minOf(ref.widthDp, full) else full
             @Suppress("DEPRECATION")
             view.updateAppWidgetSize(Bundle(), widthDp, ref.heightDp, widthDp, ref.heightDp)
+            val cell = FrameLayout(this).apply {
+                addView(view, FrameLayout.LayoutParams(MATCH, MATCH))
+                if (ref.id == resizingId) addView(ResizeFrame(context, accent), FrameLayout.LayoutParams(MATCH, MATCH))
+            }
+            widgetCells[ref.id] = cell
             widgetBox.addView(
-                view,
-                LinearLayout.LayoutParams(MATCH, dp(ref.heightDp)).apply { bottomMargin = dp(WIDGET_GAP_DP) },
+                cell,
+                LinearLayout.LayoutParams(dp(widthDp), dp(ref.heightDp)).apply { bottomMargin = dp(WIDGET_GAP_DP) },
             )
+            if (ref.id == resizingId) {
+                val controls = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(chip("full width", DIM) { setWidgetSize(ref.id, 0, widgetRefById(ref.id)?.heightDp ?: ref.heightDp) })
+                    addView(chip("remove", DIM) {
+                        widgetRefById(ref.id)?.let(::removeWidget)
+                        stopResizing()
+                    })
+                    addView(chip("done", accent) { stopResizing() })
+                }
+                resizeControls = controls
+                widgetBox.addView(controls)
+            }
+        }
+    }
+
+    private fun widgetRefById(id: Int) = widgetRefs.firstOrNull { it.id == id }
+
+    private fun setWidgetSize(id: Int, widthDp: Int, heightDp: Int) {
+        val i = widgetRefs.indexOfFirst { it.id == id }
+        if (i < 0) return
+        widgetRefs[i] = widgetRefs[i].copy(widthDp = widthDp, heightDp = heightDp)
+        save()
+        rerenderWidgets()
+    }
+
+    private fun startResizing(id: Int) {
+        resizingId = id
+        rerenderWidgets()
+    }
+
+    private fun stopResizing() {
+        if (resizingId == null) return
+        resizingId = null
+        rerenderWidgets()
+    }
+
+    /** The outline and grips shown on a widget being stretched. */
+    private class ResizeFrame(context: android.content.Context, color: Int) : View(context) {
+        private val density = resources.displayMetrics.density
+        private val line = android.graphics.Paint().apply {
+            this.color = color
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = density
+        }
+        private val grip = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = color
+            strokeWidth = 3 * density
+            strokeCap = android.graphics.Paint.Cap.ROUND
+        }
+
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val half = line.strokeWidth / 2
+            canvas.drawRect(half, half, w - half, h - half, line)
+            val length = minOf(12 * density, w / 4, h / 4)
+            val inset = grip.strokeWidth / 2
+            canvas.drawLine(w - inset, h / 2 - length, w - inset, h / 2 + length, grip)
+            canvas.drawLine(w / 2 - length, h - inset, w / 2 + length, h - inset, grip)
+            canvas.drawLine(w - inset - length, h - inset, w - inset, h - inset, grip)
+            canvas.drawLine(w - inset, h - inset - length, w - inset, h - inset, grip)
         }
     }
 
@@ -694,16 +1591,29 @@ class MainActivity : Activity(), Host {
         const val COVER = "cover"
         const val INNER = "inner"
         const val CREASE_GAP_DP = 40
+        const val SWIPE_DP = 48
+        const val DOCK_HEIGHT_DP = 56
+        const val DOCK_ICON_DP = 26
+        const val DOCK_SLOT_DP = 88
+        const val ICON_COLUMNS = 6
+        const val WIDGET_STEP_DP = 40
+        const val MAX_SHORTCUTS = 6
         const val PANE_MARGIN_DP = 64
         const val WIDGET_GAP_DP = 8
         // Widgets often declare a minimum smaller than they can draw in without clipping.
         const val MIN_WIDGET_DP = 80
+        const val MIN_WIDGET_WIDTH_DP = 80
+        const val RESIZE_GRIP_DP = 32
+        const val RESIZE_CONTROLS_DP = 48
         const val MAX_DEFAULT_WIDGET_DP = 240
         const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
         val TEXT = Color.parseColor("#E6DFCF")
-        val DIM = Color.parseColor("#8A8478")
-        val FAINT = Color.parseColor("#55514A")
+        val BLACK_DIM = Color.parseColor("#8A8478")
+        val BLACK_FAINT = Color.parseColor("#55514A")
+        const val REQ_PHOTO = 3
+        val PHOTO_DIM = PHOTO_DIM_RGB or (0xFF shl 24)
+        val PHOTO_FAINT = PHOTO_FAINT_RGB or (0xFF shl 24)
         val ERROR = Color.parseColor("#D98A7A")
     }
 }

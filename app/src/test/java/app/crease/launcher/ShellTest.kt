@@ -177,6 +177,28 @@ class ShellTest {
         assertTrue(shell.suggest("").isEmpty())
     }
 
+    @Test fun unknownAlignFallsBackToLeft() {
+        assertEquals(ALIGN_RIGHT, knownAlign("right"))
+        assertEquals(ALIGN_LEFT, knownAlign("sideways"))
+    }
+
+    @Test fun stretchedSizeClampsAndSnaps() {
+        assertEquals(200 to 150, stretchedSize(200, 150, 340, 600, 80, 40))
+        assertEquals(80 to 40, stretchedSize(10, 5, 340, 600, 80, 40))
+        assertEquals(0 to 600, stretchedSize(335, 900, 340, 600, 80, 40))
+        assertEquals(0 to 100, stretchedSize(900, 100, 340, 600, 80, 40))
+    }
+
+    @Test fun moveByStaysInBounds() {
+        val list = mutableListOf("a", "b", "c")
+        list.moveBy(0, -1)
+        assertEquals(listOf("a", "b", "c"), list)
+        list.moveBy(0, 1)
+        assertEquals(listOf("b", "a", "c"), list)
+        list.moveBy(2, 1)
+        assertEquals(listOf("b", "a", "c"), list)
+    }
+
     @Test fun outputIsCapped() {
         repeat(800) { shell.run("help") }
         assertTrue(shell.output.size <= 600)

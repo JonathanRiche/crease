@@ -1,0 +1,4 @@
+<resources>
+    <string name="edge_panel_label">crease edge panel</string>
+    <string name="edge_panel_description">Adds a swipe-in panel of your pinned and recent apps on the right edge of the inner screen. Accessibility access is used only to draw the panel over other apps. crease does not read what is on your screen.</string>
+</resources>
