@@ -33,6 +33,8 @@ class State {
     val hiddenFolders = linkedSetOf<String>()
     var theme = DEFAULT_THEME
     var autoKeyboard = false
+    /** How home apps are shown: see [HOME_STYLES]. */
+    var homeStyle = STYLE_LIST
     /** Where home apps sit on the inner screen. */
     var homeAlign = ALIGN_LEFT
     var background = BG_BLACK
@@ -60,6 +62,15 @@ interface Host {
     fun save()
     fun themeChanged()
 }
+
+const val STYLE_LIST = "list"
+const val STYLE_HINGE = "hinge"
+const val STYLE_BOARD = "board"
+const val STYLE_TAPE = "tape"
+val HOME_STYLES = listOf(STYLE_LIST, STYLE_HINGE, STYLE_BOARD, STYLE_TAPE)
+
+/** Falls back to the plain list for anything unrecognised in saved settings. */
+fun knownStyle(value: String) = if (value in HOME_STYLES) value else STYLE_LIST
 
 const val ALIGN_LEFT = "left"
 const val ALIGN_CENTER = "center"

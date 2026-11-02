@@ -11,6 +11,7 @@ class Store(context: Context) {
         val root = runCatching { JSONObject(prefs.getString(KEY, "{}")!!) }.getOrElse { JSONObject() }
         state.theme = root.optString("theme", state.theme)
         state.autoKeyboard = root.optBoolean("autoKeyboard", false)
+        state.homeStyle = knownStyle(root.optString("homeStyle", STYLE_LIST))
         state.homeAlign = knownAlign(root.optString("homeAlign", ALIGN_LEFT))
         state.background = knownBackground(root.optString("background", BG_BLACK))
         state.dim = knownDim(root.optString("dim", DEFAULT_DIM))
@@ -49,6 +50,7 @@ class Store(context: Context) {
             .put("theme", state.theme)
             .put("autoKeyboard", state.autoKeyboard)
             .put("homeAlign", state.homeAlign)
+            .put("homeStyle", state.homeStyle)
             .put("background", state.background)
             .put("dim", state.dim)
             .put("pins", JSONArray(state.pins))

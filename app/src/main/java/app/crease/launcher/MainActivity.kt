@@ -219,6 +219,14 @@ class MainActivity : Activity(), Host {
             gravity = Gravity.CENTER
         }
         clockView = clock(if (twoPane) 72f else 56f)
+        val look = DialLook(TEXT, DIM, FAINT, accent, FOLDER_CARD, mono, monoLight)
+        dialView = when (state.homeStyle) {
+            STYLE_HINGE -> HingeDial(this, look)
+            STYLE_BOARD -> BoardDial(this, look)
+            STYLE_TAPE -> TapeDial(this, look)
+            else -> null
+        }
+        val dial = dialView
         homeStage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         panel = buildPanel()
         val stage = FrameLayout(this).apply {
@@ -233,7 +241,11 @@ class MainActivity : Activity(), Host {
             val panes = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             left.addView(clockView)
-            when (innerAlign) {
+            if (dial != null) {
+                // Board and tape sit under the clock; the hinge spans the crease, added below.
+                if (dial !is HingeDial) left.addView(dial, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(28) })
+                homeStage.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+            } else when (innerAlign) {
                 ALIGN_LEFT -> {
                     left.addView(homeScroll, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(28) })
                     homeStage.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
@@ -253,9 +265,10 @@ class MainActivity : Activity(), Host {
             val body = FrameLayout(this)
             body.addView(panes, FrameLayout.LayoutParams(MATCH, MATCH))
             // Only as wide as its text, so touches beside it still reach any widgets.
-            if (innerAlign == ALIGN_CENTER) {
+            if (dial == null && innerAlign == ALIGN_CENTER) {
                 body.addView(homeScroll, FrameLayout.LayoutParams(WRAP, MATCH, Gravity.CENTER_HORIZONTAL))
             }
+            if (dial is HingeDial) body.addView(dial, FrameLayout.LayoutParams(MATCH, MATCH))
             root.addView(body, LinearLayout.LayoutParams(MATCH, 0, 1f))
             // Spans both halves, so the dock is centred on the whole screen.
             root.addView(dockBar, LinearLayout.LayoutParams(MATCH, WRAP))
@@ -263,7 +276,7 @@ class MainActivity : Activity(), Host {
             root.addView(clockView)
             homeStage.setPadding(0, dp(20), 0, 0)
             homeStage.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, coverWidgetHeight()))
-            homeStage.addView(homeScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+            homeStage.addView(dial ?: homeScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
             homeStage.addView(hintView)
             homeStage.addView(dockBar)
             root.addView(stage, LinearLayout.LayoutParams(MATCH, 0, 1f))
@@ -477,6 +490,7 @@ class MainActivity : Activity(), Host {
         }
         renderFolders()
         renderDock()
+        dialView?.items = homeItems()
         hintView.text = if (state.pins.isEmpty() && state.folders.isEmpty()) {
             "swipe up for apps · hold to edit"
         } else {
@@ -548,6 +562,15 @@ class MainActivity : Activity(), Host {
     }
 
     private var folderDialog: android.app.Dialog? = null
+    private var dialView: HomeDial? = null
+
+    /** The same apps and folders as the home list, for the hinge, board and tape styles. */
+    private fun homeItems(): List<HomeDial.Item> =
+        state.pins.mapNotNull(::byIdOrNull).map { app ->
+            HomeDial.Item(app.label.lowercase(), false, open = { launch(app) }, hold = { openMenu(app) })
+        } + state.folders.keys.filter { it !in state.hiddenFolders }.map { name ->
+            HomeDial.Item("$name/", true, open = { openFolder(name) }, hold = { openEdit() })
+        }
 
     /** A folder opens as a centred popup over a dimmed home, with only its own apps. */
     private fun openFolder(name: String) {
@@ -624,6 +647,8 @@ class MainActivity : Activity(), Host {
         backdrop.setPanelOpen(!home)
         homeStage.visibility = if (home) View.VISIBLE else View.GONE
         dockBar.visibility = if (home) View.VISIBLE else View.GONE
+        // The hinge sits over both halves, so it steps aside for search and edit.
+        dialView?.let { it.visibility = if (home || it !is HingeDial) View.VISIBLE else View.GONE }
         // Centred apps sit over both halves, so they'd collide with search and edit.
         if (twoPane && innerAlign == ALIGN_CENTER) homeScroll.visibility = if (home) View.VISIBLE else View.GONE
         panel.visibility = if (home) View.GONE else View.VISIBLE
@@ -931,6 +956,17 @@ class MainActivity : Activity(), Host {
             )
         }
         outputBox.addView(chip("+ choose apps", accent) { openPicker(null) })
+        outputBox.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(chip("style:", FAINT) {})
+            HOME_STYLES.forEach { style ->
+                addView(chip(style, if (style == state.homeStyle) accent else DIM) {
+                    state.homeStyle = style
+                    save()
+                    build()
+                })
+            }
+        })
         if (twoPane) outputBox.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(chip("position:", FAINT) {})
@@ -1320,7 +1356,8 @@ class MainActivity : Activity(), Host {
 
         private fun allowSwipe(x: Float, y: Float) = when (mode) {
             // Widgets keep their own scrolling, and so does a home list that overflows.
-            Mode.HOME -> !inside(widgetBox, x, y) && !(inside(homeScroll, x, y) && homeScroll.canScrollVertically(1))
+            Mode.HOME -> !inside(widgetBox, x, y) && dialView?.claims(x, y) != true &&
+                !(inside(homeScroll, x, y) && homeScroll.canScrollVertically(1))
             else -> inside(outputScroll, x, y) && !outputScroll.canScrollVertically(-1)
         }
 
@@ -1354,7 +1391,9 @@ class MainActivity : Activity(), Host {
                     val onEdge = (edges != null && (e.rawX < edges.left || e.rawX > width - edges.right)) ||
                         e.rawY > height - bottomZone
                     if (onEdge) heldWidget = null
-                    if (mode == Mode.HOME && !onEdge && !inside(widgetBox, e.rawX, e.rawY) && !hitsControl(this, e.rawX, e.rawY)) {
+                    if (mode == Mode.HOME && !onEdge && !inside(widgetBox, e.rawX, e.rawY) &&
+                        dialView?.claims(e.rawX, e.rawY) != true && !hitsControl(this, e.rawX, e.rawY)
+                    ) {
                         postDelayed(hold, android.view.ViewConfiguration.getLongPressTimeout().toLong())
                     }
                 }
