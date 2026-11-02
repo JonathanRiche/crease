@@ -54,7 +54,6 @@ class MainActivity : Activity(), Host {
     private val appTargets = HashMap<String, Pair<ComponentName, UserHandle>>()
     private var appCache: List<App>? = null
     private var pendingWidget = AppWidgetManager.INVALID_APPWIDGET_ID
-    private val openFolders = hashSetOf<String>()
 
     private lateinit var root: LinearLayout
     private lateinit var prompt: EditText
@@ -542,20 +541,80 @@ class MainActivity : Activity(), Host {
     private fun renderFolders() {
         folderBox.removeAllViews()
         folderBox.gravity = homeGravity
-        state.folders.forEach { (name, ids) ->
-            val isOpen = name in openFolders
-            folderBox.addView(chip("$name/", if (isOpen) accent else DIM) {
-                if (!openFolders.add(name)) openFolders.remove(name)
-                renderFolders()
-            })
+        state.folders.keys.forEach { name ->
+            folderBox.addView(chip("$name/", DIM) { openFolder(name) })
             alignHomeRow(folderBox.getChildAt(folderBox.childCount - 1))
-            if (isOpen) ids.mapNotNull(::byIdOrNull).forEach { app ->
-                folderBox.addView(
-                    row(if (homeGravity == Gravity.START) "  ${app.label}" else app.label, onHold = { openMenu(app) }) { launch(app) },
-                )
-                alignHomeRow(folderBox.getChildAt(folderBox.childCount - 1))
-            }
         }
+    }
+
+    private var folderDialog: android.app.Dialog? = null
+
+    /** A folder opens as a centred popup over a dimmed home, with only its own apps. */
+    private fun openFolder(name: String) {
+        val ids = state.folders[name] ?: return
+        folderDialog?.dismiss()
+        val dialog = android.app.Dialog(this)
+        val apps = ids.mapNotNull(::byIdOrNull)
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        apps.forEach { app ->
+            list.addView(
+                row(
+                    app.label,
+                    onHold = {
+                        dialog.dismiss()
+                        openMenu(app)
+                    },
+                ) {
+                    dialog.dismiss()
+                    launch(app)
+                },
+            )
+        }
+        if (apps.isEmpty()) list.addView(lineView(Line("empty. hold home, then tap $name/ to add apps")))
+        val title = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(10))
+            addView(TextView(context).apply {
+                text = "$name/"
+                typeface = mono
+                setTextColor(accent)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            }, LinearLayout.LayoutParams(0, WRAP, 1f))
+            addView(TextView(context).apply {
+                text = apps.size.toString()
+                typeface = mono
+                setTextColor(FAINT)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            })
+        }
+        val maxHeight = (resources.displayMetrics.heightPixels * FOLDER_MAX_HEIGHT).toInt()
+        val listHeight = minOf(maxOf(apps.size, 1) * dp(FOLDER_ROW_DP), maxHeight)
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(18), dp(12), dp(14))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(FOLDER_CARD)
+                cornerRadius = dp(16).toFloat()
+                setStroke(dp(1).coerceAtLeast(1), FAINT)
+            }
+            addView(title)
+            addView(ScrollView(context).apply {
+                isVerticalScrollBarEnabled = false
+                isFocusable = false
+                addView(list)
+            }, LinearLayout.LayoutParams(MATCH, listHeight))
+        }
+        dialog.setContentView(card)
+        dialog.setCanceledOnTouchOutside(true)
+        dialog.window?.apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            setLayout(minOf(dp(FOLDER_WIDTH_DP), resources.displayMetrics.widthPixels - dp(48)), WRAP)
+            setDimAmount(FOLDER_DIM)
+        }
+        dialog.setOnDismissListener { if (folderDialog === dialog) folderDialog = null }
+        folderDialog = dialog
+        dialog.show()
     }
 
     // ---- modes ----
@@ -651,6 +710,7 @@ class MainActivity : Activity(), Host {
     }
 
     private fun goHome() {
+        folderDialog?.dismiss()
         namePrompt = null
         pickFolder = null
         pickDock = false
@@ -898,7 +958,7 @@ class MainActivity : Activity(), Host {
             outputBox.addView(
                 row(
                     "$name/  $count",
-                    controls = listOf(Control("×", null) { state.folders.remove(name); openFolders.remove(name); edit() }),
+                    controls = listOf(Control("×", null) { state.folders.remove(name); edit() }),
                 ) { openPicker(name) },
             )
         }
@@ -1623,6 +1683,11 @@ class MainActivity : Activity(), Host {
         const val WIDGET_GAP_DP = 8
         // Widgets often declare a minimum smaller than they can draw in without clipping.
         const val MIN_WIDGET_DP = 80
+        const val FOLDER_WIDTH_DP = 340
+        const val FOLDER_ROW_DP = 44
+        const val FOLDER_MAX_HEIGHT = 0.6f
+        const val FOLDER_DIM = 0.7f
+        val FOLDER_CARD = Color.parseColor("#0E0D0B")
         const val MIN_WIDGET_WIDTH_DP = 80
         const val RESIZE_GRIP_DP = 32
         const val RESIZE_CONTROLS_DP = 48
