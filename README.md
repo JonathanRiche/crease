@@ -3,6 +3,22 @@
 A text-only terminal launcher for foldable Android phones, in the spirit of Pro Launcher.
 Android 11+. No icons, no internet permission, under 1 MB.
 
+<p align="center">
+  <img src="docs/screenshots/1-inner-home.webp" alt="Inner screen: a large thin clock, home apps listed as lowercase text, and a dock of line icons." width="49%">
+  <img src="docs/screenshots/3-cover-home.webp" alt="Cover screen: clock, a search widget, centred home apps and the dock." width="23%">
+  <img src="docs/screenshots/7-cover-search.webp" alt="Cover screen search: typing filters apps, and + adds one to home." width="23%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/4-edit.webp" alt="Edit mode: reorder home apps, set their position, and choose dock apps." width="32%">
+  <img src="docs/screenshots/5-icons.webp" alt="Dock icon picker: 30 line icons, or the app name as text." width="32%">
+  <img src="docs/screenshots/6-edge-panel.webp" alt="Edge panel: a text list of apps swiped in over another app." width="32%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/2-inner-centered.webp" alt="Inner screen with home apps centred." width="49%">
+</p>
+
+Screenshots are from a foldable emulator.
+
 ## Install
 
 Download [`crease.apk`](https://github.com/JonathanRiche/crease/releases/latest/download/crease.apk)
