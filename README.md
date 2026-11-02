@@ -39,6 +39,7 @@ or run `settings` in crease.
 - **The dock** sits at the bottom. Any app can go in it, showing a line icon you pick or its name. Add apps in edit mode, and tap one there to change its icon.
 - **Swipe in from the right edge** on the inner screen, inside any app, for a text panel of your apps and recents. Turn it on and choose its apps in edit mode. It uses an accessibility service with no access to screen content.
 - **Folders** open as a popup; tap outside or swipe back to close. In edit mode, `home` chooses which folders show on home. All folders show first in search, filtered as you type.
+- **Motion** for the home list, set in edit mode and driven only by your finger: `none` (default), `drum` (rows tilt like a wheel), `lens` (the centre row swells) or `bend` (rows curve away from the centre). Each snaps the nearest app to the centre.
 - **Hold an app** for its shortcuts, rename, hide, app info and uninstall.
 
 On the inner screen, home apps can sit on the left, in the center or on the right (set in edit mode), and the dock is centered. Widgets stay on the right half.

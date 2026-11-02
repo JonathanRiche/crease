@@ -205,6 +205,7 @@ class MainActivity : Activity(), Host {
                 addView(folderBox)
             })
         }
+        if (state.homeMotion != MOTION_NONE) setUpMotion()
         hintView = TextView(this).apply {
             typeface = mono
             setTextColor(FAINT)
@@ -547,6 +548,124 @@ class MainActivity : Activity(), Host {
         }
     }
 
+    // ---- home motion ----
+
+    /** The edge rows bend towards: away from where the list is anchored. */
+    private val bendDirection get() = if (homeGravity == Gravity.END) -1f else 1f
+    private var listTouched = false
+    private val snapToCentre = Runnable { snapHomeList() }
+
+    /**
+     * Makes the home list scroll past its ends, so any row can reach the centre, and reshapes
+     * each row by its distance from the centre whenever the list moves.
+     */
+    private fun setUpMotion() {
+        val scroll = homeScroll
+        scroll.isFillViewport = false
+        // Rows grow, tilt and slide past their own edges, so nothing between them and the
+        // screen may clip them.
+        listOf<ViewGroup>(shortcutBox, folderBox, scroll).forEach {
+            it.clipChildren = false
+            it.clipToPadding = false
+        }
+        (scroll.getChildAt(0) as? ViewGroup)?.apply {
+            clipChildren = false
+            clipToPadding = false
+        }
+        scroll.post {
+            var parent = scroll.parent as? ViewGroup
+            while (parent != null && parent !== root) {
+                parent.clipChildren = false
+                parent = parent.parent as? ViewGroup
+            }
+            root.clipChildren = false
+        }
+        scroll.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            val content = scroll.getChildAt(0) ?: return@addOnLayoutChangeListener
+            if (bottom - top != oldBottom - oldTop) {
+                val pad = (bottom - top) / 2 - dp(FOLDER_ROW_DP) / 2
+                content.setPadding(0, pad, 0, pad)
+            }
+            applyMotion()
+        }
+        scroll.setOnScrollChangeListener { _, _, _, _, _ ->
+            applyMotion()
+            scroll.removeCallbacks(snapToCentre)
+            if (!listTouched) scroll.postDelayed(snapToCentre, SNAP_DELAY_MS)
+        }
+        scroll.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    listTouched = true
+                    scroll.removeCallbacks(snapToCentre)
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    listTouched = false
+                    scroll.postDelayed(snapToCentre, SNAP_DELAY_MS)
+                }
+            }
+            false
+        }
+    }
+
+    private fun rowCentres(): List<Pair<View, Float>> {
+        return listOf(shortcutBox, folderBox).flatMap { box ->
+            (0 until box.childCount).map { i ->
+                val row = box.getChildAt(i)
+                // A box's top already includes the content's padding.
+                row to (box.top + row.top + row.height / 2f)
+            }
+        }
+    }
+
+    private fun applyMotion() {
+        val motion = state.homeMotion
+        if (motion == MOTION_NONE) return
+        val half = homeScroll.height / 2f
+        val centre = homeScroll.scrollY + half
+        rowCentres().forEach { (row, rowCentre) ->
+            val d = drumOffset(rowCentre, centre, half)
+            val near = 1f - kotlin.math.abs(d)
+            row.pivotY = row.height / 2f
+            row.pivotX = when (homeGravity) {
+                Gravity.END -> row.width.toFloat()
+                Gravity.CENTER_HORIZONTAL -> row.width / 2f
+                else -> 0f
+            }
+            when (motion) {
+                MOTION_DRUM -> {
+                    row.cameraDistance = row.height * DRUM_CAMERA
+                    row.rotationX = -d * DRUM_TILT
+                    row.alpha = 1f - kotlin.math.abs(d) * DRUM_FADE
+                    row.scaleX = 1f - kotlin.math.abs(d) * DRUM_SHRINK
+                    row.scaleY = row.scaleX
+                }
+                MOTION_LENS -> {
+                    // The row under the centre swells; the rest stay small and quiet.
+                    val swell = 1f + LENS_GROW * near * near * near
+                    row.scaleX = swell
+                    row.scaleY = swell
+                    row.alpha = LENS_MIN_ALPHA + (1f - LENS_MIN_ALPHA) * near
+                }
+                MOTION_BEND -> {
+                    // Rows slide out along a curve the further they are from the centre.
+                    row.translationX = bendDirection * d * d * dp(BEND_DP)
+                    row.rotation = bendDirection * d * BEND_TURN
+                    row.alpha = 1f - kotlin.math.abs(d) * BEND_FADE
+                }
+            }
+        }
+    }
+
+    /** After the list settles, eases the nearest row onto the centre, like a dial clicking in. */
+    private fun snapHomeList() {
+        if (state.homeMotion == MOTION_NONE || listTouched) return
+        val centre = homeScroll.scrollY + homeScroll.height / 2f
+        val nearest = rowCentres().minByOrNull { kotlin.math.abs(it.second - centre) } ?: return
+        val target = (nearest.second - homeScroll.height / 2f).toInt()
+        if (kotlin.math.abs(target - homeScroll.scrollY) > 2) homeScroll.smoothScrollTo(0, target)
+    }
+
     private var folderDialog: android.app.Dialog? = null
 
     /** A folder opens as a centred popup over a dimmed home, with only its own apps. */
@@ -619,8 +738,12 @@ class MainActivity : Activity(), Host {
 
     // ---- modes ----
 
+    private var shownMode: Mode? = null
+
     private fun applyMode() {
         val home = mode == Mode.HOME
+        val arrivingHome = home && shownMode != Mode.HOME
+        shownMode = mode
         backdrop.setPanelOpen(!home)
         homeStage.visibility = if (home) View.VISIBLE else View.GONE
         dockBar.visibility = if (home) View.VISIBLE else View.GONE
@@ -653,6 +776,7 @@ class MainActivity : Activity(), Host {
             Mode.ICON -> renderIcons()
         }
         if (home) renderHome()
+        if (arrivingHome) root.post { applyMotion() }
     }
 
     private fun setMode(next: Mode) {
@@ -931,6 +1055,22 @@ class MainActivity : Activity(), Host {
             )
         }
         outputBox.addView(chip("+ choose apps", accent) { openPicker(null) })
+        outputBox.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(chip("motion:", FAINT) {})
+            HOME_MOTIONS.forEach { motion ->
+                addView(chip(motion, if (motion == state.homeMotion) accent else DIM) {
+                    state.homeMotion = motion
+                    save()
+                    build()
+                })
+            }
+        }.let { strip ->
+            HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(strip)
+            }
+        })
         if (twoPane) outputBox.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(chip("position:", FAINT) {})
@@ -1708,6 +1848,16 @@ class MainActivity : Activity(), Host {
         // Widgets often declare a minimum smaller than they can draw in without clipping.
         const val MIN_WIDGET_DP = 80
         const val FOLDER_WIDTH_DP = 340
+        const val SNAP_DELAY_MS = 120L
+        const val LENS_GROW = 0.45f
+        const val LENS_MIN_ALPHA = 0.35f
+        const val BEND_DP = 90
+        const val BEND_TURN = 6f
+        const val BEND_FADE = 0.6f
+        const val DRUM_TILT = 60f
+        const val DRUM_FADE = 0.8f
+        const val DRUM_SHRINK = 0.22f
+        const val DRUM_CAMERA = 24f
         const val FOLDER_ROW_DP = 44
         const val FOLDER_MAX_HEIGHT = 0.6f
         const val FOLDER_DIM = 0.7f

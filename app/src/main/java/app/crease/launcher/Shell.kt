@@ -33,6 +33,8 @@ class State {
     val hiddenFolders = linkedSetOf<String>()
     var theme = DEFAULT_THEME
     var autoKeyboard = false
+    /** How the home list moves: see [HOME_MOTIONS]. */
+    var homeMotion = MOTION_NONE
     /** Where home apps sit on the inner screen. */
     var homeAlign = ALIGN_LEFT
     var background = BG_BLACK
@@ -60,6 +62,23 @@ interface Host {
     fun save()
     fun themeChanged()
 }
+
+// Home list motion. All of them follow your finger as you scroll the list; none plays on its own.
+const val MOTION_NONE = "none"
+const val MOTION_DRUM = "drum"
+const val MOTION_LENS = "lens"
+const val MOTION_BEND = "bend"
+val HOME_MOTIONS = listOf(MOTION_NONE, MOTION_DRUM, MOTION_LENS, MOTION_BEND)
+
+/** Falls back to no motion for anything unrecognised in saved settings. */
+fun knownMotion(value: String) = if (value in HOME_MOTIONS) value else MOTION_NONE
+
+/**
+ * Where a row sits on the drum, from -1 (top edge) through 0 (centre) to 1 (bottom edge),
+ * given its centre and the visible area's centre and half-height, all in pixels.
+ */
+fun drumOffset(rowCentre: Float, viewCentre: Float, halfHeight: Float): Float =
+    if (halfHeight <= 0f) 0f else ((rowCentre - viewCentre) / halfHeight).coerceIn(-1f, 1f)
 
 const val ALIGN_LEFT = "left"
 const val ALIGN_CENTER = "center"
