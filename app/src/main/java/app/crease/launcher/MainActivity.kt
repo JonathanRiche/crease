@@ -615,6 +615,8 @@ class MainActivity : Activity(), Host {
         trail.clear()
         backdropNote = null
         setMode(Mode.EDIT)
+        // Always start at the top, not wherever the list was left last time.
+        outputScroll.post { outputScroll.scrollTo(0, 0) }
     }
 
     private fun push(next: Mode) {

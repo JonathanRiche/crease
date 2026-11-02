@@ -17,7 +17,7 @@ Android 11+. No icons, no internet permission, under 1 MB.
   <img src="docs/screenshots/2-inner-centered.webp" alt="Inner screen with home apps centred." width="49%">
 </p>
 
-Screenshots are from a foldable emulator.
+Screenshots are from a foldable emulator, with a photo background set in edit mode.
 
 ## Install
 
