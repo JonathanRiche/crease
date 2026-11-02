@@ -550,6 +550,10 @@ class MainActivity : Activity(), Host {
         view.layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
         val text = (view as? ViewGroup)?.getChildAt(0) as? TextView ?: view as? TextView ?: return
         text.setPadding(0, 0, 0, 0)
+        // A row as narrow as its name is easy to miss (a short name like "x" was a few pixels
+        // wide), so every row gets a generous tap area with the text placed inside it.
+        text.minWidth = dp(HOME_ROW_TAP_DP)
+        text.gravity = Gravity.CENTER_VERTICAL or if (homeGravity == Gravity.END) Gravity.END else Gravity.CENTER_HORIZONTAL
     }
 
     private fun renderFolders() {
@@ -1747,6 +1751,7 @@ class MainActivity : Activity(), Host {
         // Widgets often declare a minimum smaller than they can draw in without clipping.
         const val MIN_WIDGET_DP = 80
         const val FOLDER_WIDTH_DP = 340
+        const val HOME_ROW_TAP_DP = 200
         const val FOLDER_ROW_DP = 44
         const val FOLDER_MAX_HEIGHT = 0.6f
         const val FOLDER_DIM = 0.7f
