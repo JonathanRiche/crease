@@ -242,9 +242,19 @@ class MainActivity : Activity(), Host {
             val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             left.addView(clockView)
             if (dial != null) {
-                // Board and tape sit under the clock; the hinge spans the crease, added below.
-                if (dial !is HingeDial) left.addView(dial, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(28) })
-                homeStage.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                // Board and tape follow the position setting; the hinge spans the crease, added below.
+                when {
+                    dial is HingeDial || innerAlign == ALIGN_CENTER ->
+                        homeStage.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                    innerAlign == ALIGN_RIGHT -> {
+                        homeStage.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, coverWidgetHeight()))
+                        homeStage.addView(dial, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                    }
+                    else -> {
+                        left.addView(dial, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(28) })
+                        homeStage.addView(widgetScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                    }
+                }
             } else when (innerAlign) {
                 ALIGN_LEFT -> {
                     left.addView(homeScroll, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(28) })
@@ -269,6 +279,11 @@ class MainActivity : Activity(), Host {
                 body.addView(homeScroll, FrameLayout.LayoutParams(WRAP, MATCH, Gravity.CENTER_HORIZONTAL))
             }
             if (dial is HingeDial) body.addView(dial, FrameLayout.LayoutParams(MATCH, MATCH))
+            // Centred board and tape sit in the middle of the whole screen, only as big as they
+            // need, so holds and swipes around them still reach home.
+            if (dial != null && dial !is HingeDial && innerAlign == ALIGN_CENTER) {
+                body.addView(dial, FrameLayout.LayoutParams(dp(CENTRED_DIAL_WIDTH_DP), dp(CENTRED_DIAL_HEIGHT_DP), Gravity.CENTER))
+            }
             root.addView(body, LinearLayout.LayoutParams(MATCH, 0, 1f))
             // Spans both halves, so the dock is centred on the whole screen.
             root.addView(dockBar, LinearLayout.LayoutParams(MATCH, WRAP))
@@ -1752,6 +1767,8 @@ class MainActivity : Activity(), Host {
         const val MIN_WIDGET_DP = 80
         const val FOLDER_WIDTH_DP = 340
         const val HOME_ROW_TAP_DP = 200
+        const val CENTRED_DIAL_WIDTH_DP = 560
+        const val CENTRED_DIAL_HEIGHT_DP = 260
         const val FOLDER_ROW_DP = 44
         const val FOLDER_MAX_HEIGHT = 0.6f
         const val FOLDER_DIM = 0.7f
