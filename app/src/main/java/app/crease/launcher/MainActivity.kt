@@ -598,6 +598,8 @@ class MainActivity : Activity(), Host {
 
     private fun setMode(next: Mode) {
         resizingId = null
+        // Home is the root: nothing should be waiting to reopen once you're back there.
+        if (next == Mode.HOME) trail.clear()
         prompt.setText("")
         mode = next
         applyMode()
@@ -658,6 +660,8 @@ class MainActivity : Activity(), Host {
 
     private fun back() {
         if (resizingId != null) return stopResizing()
+        // Back on home does nothing, as on any launcher.
+        if (mode == Mode.HOME) return goHome()
         namePrompt = null
         pickFolder = null
         pickDock = false
@@ -1250,7 +1254,21 @@ class MainActivity : Activity(), Host {
                     if (heldWidget != null) {
                         postDelayed(holdWidget, android.view.ViewConfiguration.getLongPressTimeout().toLong())
                     }
-                    if (mode == Mode.HOME && !inside(widgetBox, e.rawX, e.rawY) && !hitsControl(this, e.rawX, e.rawY)) {
+                    // Touches that start on a side edge or the bottom bar are usually Android's back or
+                    // home gesture. Android takes those over without telling us the touch ended, so a
+                    // pending hold would fire half a second later and open edit mode.
+                    val insets = rootWindowInsets
+                    val edges = insets?.getInsets(WindowInsets.Type.systemGestures())
+                    val bottomZone = maxOf(
+                        edges?.bottom ?: 0,
+                        insets?.getInsets(WindowInsets.Type.mandatorySystemGestures())?.bottom ?: 0,
+                        insets?.getInsets(WindowInsets.Type.navigationBars())?.bottom ?: 0,
+                        dp(BOTTOM_GESTURE_DP),
+                    )
+                    val onEdge = (edges != null && (e.rawX < edges.left || e.rawX > width - edges.right)) ||
+                        e.rawY > height - bottomZone
+                    if (onEdge) heldWidget = null
+                    if (mode == Mode.HOME && !onEdge && !inside(widgetBox, e.rawX, e.rawY) && !hitsControl(this, e.rawX, e.rawY)) {
                         postDelayed(hold, android.view.ViewConfiguration.getLongPressTimeout().toLong())
                     }
                 }
@@ -1592,6 +1610,7 @@ class MainActivity : Activity(), Host {
         const val INNER = "inner"
         const val CREASE_GAP_DP = 40
         const val SWIPE_DP = 48
+        const val BOTTOM_GESTURE_DP = 32
         const val DOCK_HEIGHT_DP = 56
         const val DOCK_ICON_DP = 26
         const val DOCK_SLOT_DP = 88
