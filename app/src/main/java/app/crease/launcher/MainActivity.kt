@@ -541,7 +541,7 @@ class MainActivity : Activity(), Host {
     private fun renderFolders() {
         folderBox.removeAllViews()
         folderBox.gravity = homeGravity
-        state.folders.keys.forEach { name ->
+        state.folders.keys.filter { it !in state.hiddenFolders }.forEach { name ->
             folderBox.addView(chip("$name/", DIM) { openFolder(name) })
             alignHomeRow(folderBox.getChildAt(folderBox.childCount - 1))
         }
@@ -776,6 +776,19 @@ class MainActivity : Activity(), Host {
         }
         val dock = pickDock
         fun has(id: String) = if (dock) state.dock.any { it.appId == id } else id in members
+        // Folders come first in search, filtered the same way as apps.
+        if (mode == Mode.SEARCH) {
+            val folders = state.folders.keys
+                .mapNotNull { name -> (if (query.isEmpty()) 0 else score(query, name))?.let { name to it } }
+                .sortedWith(compareBy({ it.second }, { it.first.lowercase() }))
+                .map { it.first }
+            folders.forEach { name ->
+                val count = state.folders[name].orEmpty().count { byIdOrNull(it) != null }
+                outputBox.addView(row("$name/", accent, controls = listOf(Control("$count", FAINT) { openFolder(name) })) {
+                    openFolder(name)
+                })
+            }
+        }
         val all = shell.visibleApps()
         val apps = if (query.isEmpty()) all else all
             .mapNotNull { a -> score(query, a.label)?.let { a to it } }
@@ -952,13 +965,24 @@ class MainActivity : Activity(), Host {
         }
         outputBox.addView(chip("+ choose dock apps", accent) { openPicker(null, dock = true) })
 
-        outputBox.addView(section("folders"))
+        outputBox.addView(section("folders · tap home to show or hide on home"))
         state.folders.keys.toList().forEach { name ->
             val count = state.folders[name].orEmpty().count { byIdOrNull(it) != null }
+            val onHome = name !in state.hiddenFolders
             outputBox.addView(
                 row(
                     "$name/  $count",
-                    controls = listOf(Control("×", null) { state.folders.remove(name); edit() }),
+                    controls = listOf(
+                        Control("home", if (onHome) accent else FAINT) {
+                            if (onHome) state.hiddenFolders += name else state.hiddenFolders.remove(name)
+                            edit()
+                        },
+                        Control("×", null) {
+                            state.folders.remove(name)
+                            state.hiddenFolders.remove(name)
+                            edit()
+                        },
+                    ),
                 ) { openPicker(name) },
             )
         }

@@ -29,6 +29,8 @@ class State {
     /** Apps in the swipe-in panel, independent of home. */
     val panel = mutableListOf<String>()
     val folders = linkedMapOf<String, MutableList<String>>()
+    /** Folders left off the home screen. They still show in search. */
+    val hiddenFolders = linkedSetOf<String>()
     var theme = DEFAULT_THEME
     var autoKeyboard = false
     /** Where home apps sit on the inner screen. */

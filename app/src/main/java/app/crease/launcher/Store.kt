@@ -16,6 +16,7 @@ class Store(context: Context) {
         state.dim = knownDim(root.optString("dim", DEFAULT_DIM))
         root.optJSONArray("pins")?.let { state.pins += it.strings() }
         root.optJSONArray("hidden")?.let { state.hidden += it.strings() }
+        root.optJSONArray("hiddenFolders")?.let { state.hiddenFolders += it.strings() }
         // Before the panel had its own list it showed the home apps, so start from those.
         state.panel += root.optJSONArray("panel")?.strings() ?: state.pins
         root.optJSONArray("dock")?.let { a ->
@@ -52,6 +53,7 @@ class Store(context: Context) {
             .put("dim", state.dim)
             .put("pins", JSONArray(state.pins))
             .put("hidden", JSONArray(state.hidden.toList()))
+            .put("hiddenFolders", JSONArray(state.hiddenFolders.toList()))
             .put("panel", JSONArray(state.panel))
             .put("dock", JSONArray().also { a ->
                 state.dock.forEach { a.put(JSONObject().put("app", it.appId).put("icon", it.icon ?: "")) }
