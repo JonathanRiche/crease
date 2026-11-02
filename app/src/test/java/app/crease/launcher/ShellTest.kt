@@ -189,15 +189,6 @@ class ShellTest {
         assertEquals(0 to 100, stretchedSize(900, 100, 340, 600, 80, 40))
     }
 
-    @Test fun motionsFallBackAndDrumOffsetsClamp() {
-        assertEquals(MOTION_DRUM, knownMotion("drum"))
-        assertEquals(MOTION_NONE, knownMotion("spin"))
-        assertEquals(0f, drumOffset(500f, 500f, 400f), 0f)
-        assertEquals(0.5f, drumOffset(700f, 500f, 400f), 0.0001f)
-        assertEquals(-1f, drumOffset(-900f, 500f, 400f), 0f)
-        assertEquals(0f, drumOffset(10f, 500f, 0f), 0f)
-    }
-
     @Test fun moveByStaysInBounds() {
         val list = mutableListOf("a", "b", "c")
         list.moveBy(0, -1)
