@@ -1249,7 +1249,33 @@ class MainActivity : Activity(), Host {
                 back()
             }
         })
-        outputBox.addView(row("hide from search") {
+        outputBox.addView(row("app info") { info(app) })
+        outputBox.addView(row("uninstall") { uninstall(app) })
+        outputBox.addView(hideRow(app))
+    }
+
+    /**
+     * Hiding also takes an app off home, the dock and the edge panel, so it sits last and asks
+     * for a second tap before doing anything.
+     */
+    private fun hideRow(app: App): View {
+        var armed = false
+        val line = row("hide from search", DIM) {}
+        val text = line.getChildAt(0) as TextView
+        val disarm = Runnable {
+            armed = false
+            text.text = "hide from search"
+            text.setTextColor(DIM)
+        }
+        text.setOnClickListener {
+            if (!armed) {
+                armed = true
+                text.text = "tap again to hide ${app.label.lowercase()}"
+                text.setTextColor(ERROR)
+                text.postDelayed(disarm, HIDE_CONFIRM_MS)
+                return@setOnClickListener
+            }
+            text.removeCallbacks(disarm)
             state.hidden += app.id
             state.pins.remove(app.id)
             state.dock.removeAll { it.appId == app.id }
@@ -1257,9 +1283,8 @@ class MainActivity : Activity(), Host {
             save()
             renderHome()
             back()
-        })
-        outputBox.addView(row("app info") { info(app) })
-        outputBox.addView(row("uninstall") { uninstall(app) })
+        }
+        return line
     }
 
     /** Sees touches before its children, for swipes and for holding an empty area. */
@@ -1767,6 +1792,7 @@ class MainActivity : Activity(), Host {
         const val MIN_WIDGET_DP = 80
         const val FOLDER_WIDTH_DP = 340
         const val HOME_ROW_TAP_DP = 200
+        const val HIDE_CONFIRM_MS = 4000L
         const val CENTRED_DIAL_WIDTH_DP = 560
         const val CENTRED_DIAL_HEIGHT_DP = 260
         const val FOLDER_ROW_DP = 44
