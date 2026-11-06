@@ -730,7 +730,17 @@ class MainActivity : Activity(), Host {
         applyMode()
     }
 
+    /** Recent apps for search, read once each time search opens. */
+    private var recentIds: List<String> = emptyList()
+
+    private fun refreshRecent() {
+        val usage = EdgePanelAccess.recentPackages(this, RECENT_WINDOW_MS)
+            .filter { it != packageName }
+        recentIds = mergeRecent(usage, state.recent, apps())
+    }
+
     private fun openSearch() {
+        refreshRecent()
         trail.clear()
         namePrompt = null
         setMode(Mode.SEARCH)
@@ -842,7 +852,18 @@ class MainActivity : Activity(), Host {
         }
         val dock = pickDock
         fun has(id: String) = if (dock) state.dock.any { it.appId == id } else id in members
-        // Folders come first in search, filtered the same way as apps.
+        // With nothing typed, the last few apps used sit at the very top.
+        val recentFirst = if (mode == Mode.SEARCH && query.isEmpty()) {
+            val visible = shell.visibleApps()
+            recentIds.mapNotNull { id -> visible.firstOrNull { it.id == id } }.take(RECENT_SHOWN)
+        } else {
+            emptyList()
+        }
+        if (recentFirst.isNotEmpty()) outputBox.addView(section("recent"))
+        recentFirst.forEach { app ->
+            outputBox.addView(row(app.label, onHold = { openMenu(app) }) { launch(app) })
+        }
+        // Folders come next, filtered the same way as apps.
         if (mode == Mode.SEARCH) {
             val folders = state.folders.keys
                 .mapNotNull { name -> (if (query.isEmpty()) 0 else score(query, name))?.let { name to it } }
@@ -856,10 +877,8 @@ class MainActivity : Activity(), Host {
             }
         }
         val all = shell.visibleApps()
-        val apps = if (query.isEmpty()) all else all
-            .mapNotNull { a -> score(query, a.label)?.let { a to it } }
-            .sortedWith(compareBy({ it.second }, { it.first.label.lowercase() }))
-            .map { it.first }
+        val apps = searchOrder(all, query, recentIds)
+        if (recentFirst.isNotEmpty()) outputBox.addView(section("all apps"))
         apps.forEach { app ->
             fun mark() = if (has(app.id)) "✓" else "+"
             fun toggle(view: TextView?) {
@@ -1551,6 +1570,8 @@ class MainActivity : Activity(), Host {
         val (component, user) = appTargets[app.id] ?: return false
         return runCatching {
             launcherApps.startMainActivity(component, user, null, null)
+            state.recent.markOpened(app.id)
+            save()
             resetInput()
         }.isSuccess
     }
@@ -1841,6 +1862,8 @@ class MainActivity : Activity(), Host {
         const val MIN_WIDGET_DP = 80
         const val FOLDER_WIDTH_DP = 340
         const val HOME_ROW_TAP_DP = 200
+        const val RECENT_SHOWN = 5
+        const val RECENT_WINDOW_MS = 3L * 24 * 60 * 60 * 1000
         const val HIDE_CONFIRM_MS = 4000L
         const val CENTRED_DIAL_WIDTH_DP = 560
         const val CENTRED_DIAL_HEIGHT_DP = 260

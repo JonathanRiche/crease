@@ -34,7 +34,7 @@ or run `settings` in crease.
 ## Using it
 
 - **Home** shows only the apps and folders you choose, plus your widgets.
-- **Swipe up** for search. It lists every app, and `+` puts one on home. It also runs commands.
+- **Swipe up** for search. Apps used recently come first as you type, and the last five sit at the top before you type. With usage access on (the same switch as the edge panel's recents), this uses Android's own history of every app you open; otherwise only apps opened through crease count. It lists every app, and `+` puts one on home. It also runs commands.
 - **Hold the clock or an empty area** to edit: choose and order apps, set up the dock, manage folders and widgets, pick a colour and a background.
 - **The dock** sits at the bottom. Any app can go in it, showing a line icon you pick or its name. Add apps in edit mode, and tap one there to change its icon.
 - **Swipe in from the right edge** on the inner screen, inside any app, for a text panel of your apps and recents. Turn it on and choose its apps in edit mode. It uses an accessibility service with no access to screen content.

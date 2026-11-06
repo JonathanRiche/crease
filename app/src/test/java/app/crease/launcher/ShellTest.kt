@@ -189,6 +189,34 @@ class ShellTest {
         assertEquals(0 to 100, stretchedSize(900, 100, 340, 600, 80, 40))
     }
 
+    @Test fun recentAppsComeFirstAmongStrongMatches() {
+        val apps = listOf(App("gm", "Gmail"), App("gh", "GitHub"), App("gl", "Google"), App("bg", "Bigger"))
+        assertEquals(listOf("GitHub", "Gmail", "Google", "Bigger"), searchOrder(apps, "g", emptyList()).map { it.label })
+        assertEquals(listOf("Google", "GitHub", "Gmail", "Bigger"), searchOrder(apps, "g", listOf("gl")).map { it.label })
+        // A recent app that only loosely matches doesn't jump ahead of real matches.
+        assertEquals("GitHub", searchOrder(apps, "g", listOf("bg")).first().label)
+        assertEquals(apps, searchOrder(apps, "", listOf("gl")))
+    }
+
+    @Test fun recentMergesAndroidHistoryWithCreaseHistory() {
+        val apps = listOf(
+            App("com.a/.Main#0", "A"), App("com.b/.Main#0", "B"), App("com.b/.Other#0", "B2"), App("com.c/.Main#0", "C"),
+        )
+        // Android saw b then a; crease opened b's second entry and c.
+        val merged = mergeRecent(listOf("com.b", "com.a", "com.gone"), listOf("com.b/.Other#0", "com.c/.Main#0"), apps)
+        assertEquals(listOf("com.b/.Other#0", "com.a/.Main#0", "com.c/.Main#0"), merged)
+        assertEquals(listOf("com.c/.Main#0"), mergeRecent(emptyList(), listOf("com.c/.Main#0", "com.x/.Y#0"), apps))
+    }
+
+    @Test fun recentListStaysShortAndUnique() {
+        val recent = mutableListOf<String>()
+        repeat(30) { recent.markOpened("app$it") }
+        recent.markOpened("app25")
+        assertEquals(RECENT_MAX, recent.size)
+        assertEquals("app25", recent.first())
+        assertEquals(1, recent.count { it == "app25" })
+    }
+
     @Test fun moveByStaysInBounds() {
         val list = mutableListOf("a", "b", "c")
         list.moveBy(0, -1)

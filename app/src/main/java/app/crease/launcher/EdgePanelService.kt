@@ -427,19 +427,7 @@ class EdgePanelService : AccessibilityService() {
     }
 
     /** Most recent first. Empty without usage access, or if the system refuses. */
-    private fun recentPackages(): List<String> {
-        if (!EdgePanelAccess.hasUsageAccess(this)) return emptyList()
-        return runCatching {
-            val now = System.currentTimeMillis()
-            val found = getSystemService(UsageStatsManager::class.java).queryEvents(now - RECENT_WINDOW_MS, now)
-            val lastUsed = HashMap<String, Long>()
-            val event = UsageEvents.Event()
-            while (found != null && found.getNextEvent(event)) {
-                if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) lastUsed[event.packageName] = event.timeStamp
-            }
-            lastUsed.entries.sortedByDescending { it.value }.map { it.key }
-        }.getOrDefault(emptyList())
-    }
+    private fun recentPackages(): List<String> = EdgePanelAccess.recentPackages(this, RECENT_WINDOW_MS)
 
     private fun dp(v: Int) = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics,
@@ -473,6 +461,24 @@ object EdgePanelAccess {
                 val info = it.resolveInfo.serviceInfo
                 info.packageName == context.packageName && info.name == EdgePanelService::class.java.name
             }
+
+    /**
+     * Packages the phone has shown in the last [windowMs], most recent first, from Android's own
+     * usage history. Empty without usage access.
+     */
+    fun recentPackages(context: Context, windowMs: Long): List<String> {
+        if (!hasUsageAccess(context)) return emptyList()
+        return runCatching {
+            val now = System.currentTimeMillis()
+            val found = context.getSystemService(UsageStatsManager::class.java).queryEvents(now - windowMs, now)
+            val lastUsed = HashMap<String, Long>()
+            val event = UsageEvents.Event()
+            while (found != null && found.getNextEvent(event)) {
+                if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) lastUsed[event.packageName] = event.timeStamp
+            }
+            lastUsed.entries.sortedByDescending { it.value }.map { it.key }
+        }.getOrDefault(emptyList())
+    }
 
     fun hasUsageAccess(context: Context): Boolean {
         val mode = context.getSystemService(AppOpsManager::class.java).unsafeCheckOpNoThrow(

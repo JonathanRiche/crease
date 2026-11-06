@@ -26,6 +26,8 @@ class State {
     val names = linkedMapOf<String, String>()
     val pins = mutableListOf<String>()
     val dock = mutableListOf<DockItem>()
+    /** App ids opened through crease, most recent first. Kept on the phone only. */
+    val recent = mutableListOf<String>()
     /** Apps in the swipe-in panel, independent of home. */
     val panel = mutableListOf<String>()
     val folders = linkedMapOf<String, MutableList<String>>()
@@ -88,6 +90,50 @@ val THEMES = linkedMapOf(
     "ember" to 0xFFE8A36BL, "moss" to 0xFFA8C686L, "sea" to 0xFF7FB8C4L,
     "rose" to 0xFFE39AA8L, "bone" to 0xFFE6DFCFL,
 )
+
+const val RECENT_MAX = 20
+
+/** Puts [id] at the front of [recent], keeping it short. */
+fun MutableList<String>.markOpened(id: String) {
+    remove(id)
+    add(0, id)
+    while (size > RECENT_MAX) removeAt(size - 1)
+}
+
+/**
+ * Search results for [query]: strong matches (exact, prefix or word start) before loose ones,
+ * and within each, apps opened recently first, then by how well they match, then by name.
+ */
+fun searchOrder(apps: List<App>, query: String, recent: List<String>): List<App> {
+    if (query.isBlank()) return apps
+    return apps
+        .mapNotNull { a -> score(query, a.label)?.let { a to it } }
+        .sortedWith(
+            compareBy<Pair<App, Int>>(
+                { if (it.second <= 2) 0 else 1 },
+                { recent.indexOf(it.first.id).let { i -> if (i < 0) Int.MAX_VALUE else i } },
+                { it.second },
+                { it.first.label.lowercase() },
+            ),
+        )
+        .map { it.first }
+}
+
+/**
+ * Recent app ids, most recent first: Android's usage history ([usagePackages], newest first) where
+ * available, then anything opened through crease that it didn't cover. A package is matched to
+ * the entry crease last opened, else its first app. Unknown packages are dropped.
+ */
+fun mergeRecent(usagePackages: List<String>, opened: List<String>, apps: List<App>): List<String> {
+    fun packageOf(id: String) = id.substringBefore('/')
+    val ids = LinkedHashSet<String>()
+    usagePackages.forEach { pkg ->
+        val id = opened.firstOrNull { packageOf(it) == pkg } ?: apps.firstOrNull { packageOf(it.id) == pkg }?.id
+        if (id != null) ids += id
+    }
+    opened.forEach { if (apps.any { a -> a.id == it }) ids += it }
+    return ids.toList()
+}
 
 /** Moves the item at [index] by [delta], staying in bounds. */
 fun <T> MutableList<T>.moveBy(index: Int, delta: Int) {
