@@ -28,4 +28,15 @@ class DialMathTest {
         assertEquals(1, nearestIndex(48f, listOf(0f, 50f, 120f)))
         assertEquals(2, nearestIndex(500f, listOf(0f, 50f, 120f)))
     }
+
+    @Test fun ticksAreShortAndNeverClip() {
+        TickKind.values().forEach { kind ->
+            val samples = tickSamples(kind, 44100) { 1.0 }
+            assert(samples.size in 400..2500) { "$kind is ${samples.size} samples" }
+            assert(samples.all { it in -Short.MAX_VALUE..Short.MAX_VALUE })
+            // Each click fades out rather than stopping abruptly.
+            val tail = samples.takeLast(20).maxOf { kotlin.math.abs(it.toInt()) }
+            assert(tail < Short.MAX_VALUE / 8) { "$kind ends at $tail" }
+        }
+    }
 }

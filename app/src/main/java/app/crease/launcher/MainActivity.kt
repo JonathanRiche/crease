@@ -153,6 +153,7 @@ class MainActivity : Activity(), Host {
     }
 
     override fun onDestroy() {
+        ticks.release()
         launcherApps.unregisterCallback(packageCallback)
         super.onDestroy()
     }
@@ -242,6 +243,7 @@ class MainActivity : Activity(), Host {
             else -> null
         }
         val dial = dialView
+        dial?.onClick = { kind -> if (state.sound) ticks.play(kind) }
         homeStage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         panel = buildPanel()
         val stage = FrameLayout(this).apply {
@@ -597,6 +599,7 @@ class MainActivity : Activity(), Host {
 
     private var folderDialog: android.app.Dialog? = null
     private var dialView: HomeDial? = null
+    private val ticks by lazy { TickSound(this) }
 
     /** The same apps and folders as the home list, for the hinge, board and tape styles. */
     private fun homeItems(): List<HomeDial.Item> =
@@ -1002,6 +1005,17 @@ class MainActivity : Activity(), Host {
                     state.homeStyle = style
                     save()
                     build()
+                })
+            }
+        })
+        if (state.homeStyle != STYLE_LIST) outputBox.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(chip("sound:", FAINT) {})
+            listOf(true to "on", false to "off").forEach { (value, name) ->
+                addView(chip(name, if (state.sound == value) accent else DIM) {
+                    state.sound = value
+                    save()
+                    renderEdit()
                 })
             }
         })

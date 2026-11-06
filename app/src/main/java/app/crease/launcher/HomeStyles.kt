@@ -49,7 +49,14 @@ abstract class HomeDial(context: Context, protected val look: DialLook) : View(c
     protected fun sp(v: Float) = v * resources.displayMetrics.scaledDensity
     protected val slop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
 
-    protected fun tick() = performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+    /** Set by home: plays a click, or does nothing when sound is off. */
+    var onClick: ((TickKind) -> Unit)? = null
+    protected abstract val tickKind: TickKind
+
+    protected fun tick() {
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        onClick?.invoke(tickKind)
+    }
 
     protected fun textPaint(size: Float, face: Typeface = look.mono) = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = face
@@ -95,6 +102,7 @@ abstract class HomeDial(context: Context, protected val look: DialLook) : View(c
  * screen. Drag a thumb along it and the name under it lifts out across both halves.
  */
 class HingeDial(context: Context, look: DialLook) : HomeDial(context, look) {
+    override val tickKind = TickKind.HINGE
     private var active = -1
     private var touching = false
     private var downY = 0f
@@ -208,6 +216,7 @@ class HingeDial(context: Context, look: DialLook) : HomeDial(context, look) {
  * through the alphabet to the next name.
  */
 class BoardDial(context: Context, look: DialLook) : HomeDial(context, look) {
+    override val tickKind = TickKind.BOARD
     private var index = 0
     private var shown = ""
     private var from = ""
@@ -339,6 +348,7 @@ class BoardDial(context: Context, look: DialLook) : HomeDial(context, look) {
  * the reading head; the reels turn and wind as it moves.
  */
 class TapeDial(context: Context, look: DialLook) : HomeDial(context, look) {
+    override val tickKind = TickKind.TAPE
     private var offset = 0f
     private var centres = listOf<Float>()
     private var current = 0

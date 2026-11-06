@@ -33,6 +33,8 @@ class State {
     val hiddenFolders = linkedSetOf<String>()
     var theme = DEFAULT_THEME
     var autoKeyboard = false
+    /** Whether home styles click as apps pass. */
+    var sound = true
     /** How home apps are shown: see [HOME_STYLES]. */
     var homeStyle = STYLE_LIST
     /** Where home apps sit on the inner screen. */
