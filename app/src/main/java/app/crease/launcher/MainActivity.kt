@@ -681,8 +681,12 @@ class MainActivity : Activity(), Host {
         backdrop.setPanelOpen(!home)
         homeStage.visibility = if (home) View.VISIBLE else View.GONE
         dockBar.visibility = if (home) View.VISIBLE else View.GONE
-        // The hinge sits over both halves, so it steps aside for search and edit.
-        dialView?.let { it.visibility = if (home || it !is HingeDial) View.VISIBLE else View.GONE }
+        // A style laid over both halves (the hinge, or a centred board or tape) would cover search
+        // and edit, so it steps aside until you're back home.
+        dialView?.let {
+            val overBoth = it is HingeDial || (twoPane && innerAlign == ALIGN_CENTER)
+            it.visibility = if (home || !overBoth) View.VISIBLE else View.GONE
+        }
         // Centred apps sit over both halves, so they'd collide with search and edit.
         if (twoPane && innerAlign == ALIGN_CENTER) homeScroll.visibility = if (home) View.VISIBLE else View.GONE
         panel.visibility = if (home) View.GONE else View.VISIBLE
