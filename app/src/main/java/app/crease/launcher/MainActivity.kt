@@ -219,14 +219,21 @@ class MainActivity : Activity(), Host {
             gravity = Gravity.CENTER
         }
         clockView = clock(if (twoPane) 72f else 56f)
-        // Tap the clock for the clock app; holding it still opens edit mode.
-        clockView.setOnClickListener { openClockApp() }
-        clockView.setOnLongClickListener {
-            it.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-            openEdit()
-            true
+        // The time opens the clock app and the date opens the calendar; holding either opens edit.
+        (clockView as ViewGroup).let { block ->
+            val time = block.getChildAt(0)
+            val date = block.getChildAt(1)
+            date.minimumHeight = dp(40)
+            listOf(time to ::openClockApp, date to ::openCalendarApp).forEach { (view, open) ->
+                view.setOnClickListener { open() }
+                view.setOnLongClickListener {
+                    it.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                    openEdit()
+                    true
+                }
+                view.isFocusable = false
+            }
         }
-        clockView.isFocusable = false
         val look = DialLook(TEXT, DIM, FAINT, accent, FOLDER_CARD, mono, monoLight)
         dialView = when (state.homeStyle) {
             STYLE_HINGE -> HingeDial(this, look)
@@ -1191,15 +1198,19 @@ class MainActivity : Activity(), Host {
         }
     }
 
-    /**
-     * Opens the phone's clock app at its main screen: whichever app handles "show alarms",
-     * falling back to an app named clock.
-     */
-    private fun openClockApp() {
-        val handler = packageManager.resolveActivity(Intent(android.provider.AlarmClock.ACTION_SHOW_ALARMS), 0)
-            ?.activityInfo?.packageName
+    /** Opens the phone's clock app: whichever app shows alarms, falling back to an app named clock. */
+    private fun openClockApp() =
+        openAppFor(Intent(android.provider.AlarmClock.ACTION_SHOW_ALARMS), "clock")
+
+    /** Opens the phone's calendar app: the default calendar, falling back to an app named calendar. */
+    private fun openCalendarApp() =
+        openAppFor(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_CALENDAR), "calendar")
+
+    /** Launches whichever app handles [intent], at its main screen, or else an app called [name]. */
+    private fun openAppFor(intent: Intent, name: String) {
+        val handler = packageManager.resolveActivity(intent, 0)?.activityInfo?.packageName
         val app = apps().firstOrNull { handler != null && it.id.substringBefore('/') == handler }
-            ?: apps().firstOrNull { it.label.equals("clock", ignoreCase = true) }
+            ?: apps().firstOrNull { it.label.equals(name, ignoreCase = true) }
         if (app != null) launch(app)
     }
 
